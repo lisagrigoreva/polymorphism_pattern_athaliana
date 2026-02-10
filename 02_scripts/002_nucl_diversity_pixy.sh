@@ -10,7 +10,7 @@
 #SBATCH --error=/groups/nordborg/projects/genome_organization/manuscript/logs/pannagram_%A_%a.err
 
 # Activate environment
-#conda activate pannagram
+#conda activate pixy
 
 # Paths
 BASE="/groups/nordborg/projects/genome_organization"
