@@ -18,6 +18,6 @@ BASE="/groups/nordborg/projects/genome_organization"
 DATA="${BASE}/manuscript"
 
 # Run pannagram
-#pannagram -cores 10 -path_in ${DATA}/01_data/31_lyrata_genomes/genomes_8scaff/ -path_out  ${DATA}/04_output/pannagram_lyr_31g_mn47 -ref "MN47" -nchr 8 -nchr_ref 8
+pannagram -cores 10 -path_in ${DATA}/01_data/31_lyrata_genomes/genomes_8scaff/ -path_out  ${DATA}/04_output/pannagram_lyr_31g_mn47 -ref "MN47" -nchr 8 -nchr_ref 8
 # Get features 
 features -path_project ${DATA}/04_output/pannagram_lyr_31g_mn47 -ref 'MN47' -seq -cores 10
