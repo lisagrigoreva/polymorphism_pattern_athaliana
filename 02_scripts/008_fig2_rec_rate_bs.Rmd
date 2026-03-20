@@ -1,0 +1,177 @@
+---
+title: "008_modeling_selection"
+output: html_document
+date: "2025-02-18"
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+```
+## Load data
+```{r}
+## Deleterious sites
+zero_fold_sites <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/01_data/tair10/4fold/0_fold_sites.txt")
+colnames(zero_fold_sites) <- c("chrom", "position")
+## Recombination rates 
+rec_rate_female <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/01_data/recombination_rate/4314_ABCDEF.final.snp.ABEF.phase_v9.2.7.refinedCOs.hap.female.COs_freq_rand_chr.fl3.w1000s50.txt")
+rec_rate_male<- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/01_data/recombination_rate/4314_ABCDEF.final.snp.ABEF.phase_v9.2.7.refinedCOs.hap.male.COs_freq_rand_chr.fl3.w1000s50.txt")
+colnames(rec_rate_male) <- c("chrom", "window_id", "window_start", "window_end", "co_num", "co_freq", "sample_number")
+colnames(rec_rate_female) <- c("chrom", "window_id", "window_start", "window_end", "co_num", "co_freq", "sample_number")
+## Pi for this sites 
+pi_all_sites <-  read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_27g_orth_genes/genes_thaliana_diversity_pi.txt_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+
+## Filter wierd genes
+pi_all_sites <- pi_all_sites[!(pi_all_sites$avg_pi >= 0.07 & pi_all_sites$chromosome == "Chr3"), ]
+
+pi_all_sites <- pi_all_sites[!(pi_all_sites$avg_pi >= 0.07 & pi_all_sites$chromosome == "Chr4"), ]
+```
+## Calculate the average pi in the windows 
+```{r}
+calc_window <- function(data) {
+   data <- data %>%
+     mutate(
+       window_start = (window_pos_1 %/% 500000) * 500000 + 1,
+       window_end = window_start + 499999
+     )
+   return(data)
+}  # Explicitly return the modified data
+
+   
+average_pi <- function(data){
+  data <-data %>% group_by(chromosome, window_start, window_end) %>% dplyr::summarise(avg_pi_window = sum((count_diffs)) / sum(count_comparisons))
+  return(data)
+}
+# Calculate window and average pi 
+pi_4fold_thal <- calc_window(pi_all_sites)
+pi_4fold_thal <- average_pi(pi_4fold_thal)
+
+## Calculate number of deleterious sites 
+zero_fold_sites_500kb <- zero_fold_sites %>% 
+  mutate(
+    window_start = (position %/% 500000) * 500000 + 1,
+    window_end = window_start + 499999
+  ) %>% 
+  group_by(chrom,window_start, window_end) %>% 
+  dplyr::summarize(number_of_sites = n())  # or count number of positions
+
+```
+
+## Create a table for 500Mb recombination rates and number of deleterious sites and pi in this windows 
+```{r}
+## Preprocess recombination rate
+# Calculate CO frequency in 500bp
+rec_rate_male$co_freq <- rec_rate_male$co_freq*50 # 100 if cm/Mb
+rec_rate_female$co_freq <- rec_rate_female$co_freq*50
+## Select only non_overlapping windows 
+# Assuming your dataframe is called rec_rate_female
+library(dplyr)
+
+# Create non-overlapping windows
+get_non_overlapping_windows <- function(data) { 
+  data <- data %>%
+  # Create window groups of 500,000 bp
+  mutate(window_group = floor(window_start / 500000)) %>%
+  # Group by chromosome and window group
+  group_by(chrom, window_group) %>%
+  # Summarize the data
+  dplyr::summarize(
+    window_start = min(window_start),
+    window_end = window_group * 500000 + 500000,
+    total_co = sum(co_num),
+    avg_co_freq = mean(co_freq),
+    total_samples = sum(sample_number)
+  ) %>%
+  # Remove the window_group column
+  select(-window_group)
+  return(data)
+}
+
+rec_rate_male <- get_non_overlapping_windows(rec_rate_male)
+rec_rate_female <- get_non_overlapping_windows(rec_rate_female)
+
+## Sum the crossovers 
+rec_rate_combined <- inner_join(rec_rate_male, rec_rate_female, 
+                               by=c("chrom", "window_start", "window_end")) %>%
+  mutate(averaged_female_male_freq = (avg_co_freq.x + avg_co_freq.y) / 2) %>% dplyr::select(chrom,window_start,window_end,averaged_female_male_freq)
+ggplot(rec_rate_combined, aes(window_start,averaged_female_male_freq))+geom_point()+geom_line()+facet_wrap(~chrom)
+```
+## Add pi and number of deleterious sites 
+```{r}
+names(pi_4fold_thal)[1] <- "chrom"
+combined_results <- rec_rate_combined %>%
+  inner_join(pi_4fold_thal, by = c("chrom", "window_start", "window_end")) %>%
+  inner_join(zero_fold_sites_500kb, by = c("chrom", "window_start", "window_end"))
+
+## Add mutation rate 
+#combined_results$mut_rate <- combined_results$number_of_sites*10^-9
+combined_results$avg_pi_window_scaled <- scale(combined_results$avg_pi_window)
+
+ggplot(combined_results, aes(window_start,number_of_sites/500000))+geom_point()+geom_line()+facet_wrap(~chrom) + ylab("fraction_of_del_sites")
+```
+## Write results table
+```{r}
+write.csv(combined_results, "/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/background_selection_model/pi_rec_rate_deleterious_sites.txt", quote = F, row.names = F)
+```
+
+# Correlate obtained selection coefficients with pi 
+```{r}
+chrom <- c('Chr1', 'Chr2', 'Chr3', 'Chr4', 'Chr5') 
+selection_coeff <- c(1.309535e-01,1.645191e-01,6.078323e-09,6.078323e-09,6.078323e-09)
+
+
+
+selection_coeff <- data.frame(chrom, selection_coeff)
+
+combined_results_with_selection <- left_join(combined_results,selection_coeff,by=("chrom"))
+
+## Predict pi
+combined_results_with_selection$predicted_pi <- 1- (((6e-9/combined_results_with_selection$selection_coeff))/ ((1+((0.1*combined_results_with_selection$averaged_female_male_freq)/(combined_results_with_selection$selection_coeff))**2)))
+  
+
+## Add observed pi 
+ggplot(combined_results_with_selection, aes(window_start,predicted_pi))+geom_point()+geom_line()+facet_wrap(~chrom)
+
+combined_results_with_selection$scaled_pi_predicted <- scale(combined_results_with_selection$predicted_pi)
+combined_results_with_selection$scaled_pi_observed <- scale(combined_results_with_selection$avg_pi_window)
+
+ggplot(combined_results_with_selection) + geom_line(aes(x=window_start,y=scaled_pi_predicted),color='red') + 
+           geom_line(aes(x=window_start,y=scaled_pi_observed),color='blue') + 
+           ylab('Values')+xlab('Mbp')+facet_wrap(~chrom,nrow=3)
+```
+## Two scales 
+```{r}
+
+library(ggplot2)
+library(patchwork)
+
+theme_set(theme_bw())
+
+pk <- ggplot(combined_results_with_selection, aes(window_start,predicted_pi))+geom_point()+geom_line()+facet_wrap(~chrom,scales="free")
+
+pd <- ggplot(combined_results_with_selection, aes(window_start,avg_pi_window))+geom_point()+geom_line()+facet_wrap(~chrom, scales="free")
+
+print(pk/pd)
+
+```
+
+```{r}
+
+
+combined_results_with_selection %>%
+  group_by(chrom) %>%
+  dplyr::summarise(corr = cor(predicted_pi, avg_pi_window, use = "complete.obs"))
+
+```
+
+```{r}
+
+
+combined_results_with_selection %>%
+  group_by(chrom) %>%
+  dplyr::summarise(corr = cor(predicted_pi, avg_pi_window, use = "complete.obs"))
+
+```
+
+
+
+

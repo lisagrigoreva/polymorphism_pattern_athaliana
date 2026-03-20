@@ -1,0 +1,735 @@
+---
+title: "analysis_of_syntenic_genes"
+format: pdf
+editor: visual
+autor: Lisa Grigoreva 18/02/26 
+---
+
+## Genetic neighborhood influences pi changes
+
+We test the hypothesis that single-gene nucleotide diversity adapts to the local neighborhood. Implying that single-gene diversity level reflects the neighborhood in which the gene currently lives, not the ancestral neighborhood. 
+
+We align 31 *A.lyrata* genomes and 27 *A.thaliana* genomes to their corresponding reference genomes (MN47 and TAIR10) using pannagram. We estimate diversity in 4fold (synonymous) sites.
+
+Ortholgous genes calculated by running simsearch in pannagram between TAIR10 and MN47. Genes with \>85% identity were considered as syntenic.
+
+## Calculate how many genes moved together
+
+```{r}
+#| echo: false
+library(dplyr)
+library(data.table)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+# Read pannagram genes
+pannagram_1_1_genes <- read.table("/groups/nordborg/projects/genome_organization/01_data/tair10/1_1_orth_genes_pannagram.txt", header=T)
+# Select necessary columns 
+pannagram_1_1_genes <- pannagram_1_1_genes %>% dplyr::select(chrom_thal,gene_thal,start_thal,end_thal,start_lyr,end_lyr,chrom_lyr)
+```
+
+## Dotplot for transposed genes for all chromosomes
+
+```{r}
+# Chromosome lengths and cumulative positions for A. thaliana
+pannagram_1_1_genes$chrom_lyr <- gsub("scaffold_", "", pannagram_1_1_genes$chrom_lyr)
+
+thal_lengths <- pannagram_1_1_genes %>%
+  group_by(chrom_thal) %>%
+  dplyr::summarise(max_pos = max(end_thal)) %>%
+  arrange(chrom_thal) %>%
+  mutate(cum_start = lag(cumsum(max_pos), default = 0))
+
+# Chromosome lengths and cumulative positions for A. lyrata
+lyr_lengths <- pannagram_1_1_genes %>%
+  group_by(chrom_lyr) %>%
+  dplyr::summarise(max_pos = max(end_lyr)) %>%
+  arrange(chrom_lyr) %>%
+  mutate(cum_start = lag(cumsum(max_pos), default = 0))
+
+# Add cumulative positions to the main df
+pannagram_1_1_genes <- pannagram_1_1_genes %>%
+  left_join(thal_lengths %>% select(chrom_thal, cum_start), by = "chrom_thal") %>%
+  dplyr::rename(cum_start_thal = cum_start) %>%
+  left_join(lyr_lengths %>% select(chrom_lyr, cum_start), by = "chrom_lyr") %>%
+  dplyr::rename(cum_start_lyr = cum_start) %>%
+  dplyr::mutate(
+    cum_pos_thal = cum_start_thal + (start_thal + end_thal) / 2,
+    cum_pos_lyr = cum_start_lyr + (start_lyr + end_lyr) / 2
+  )
+# plot
+pannagram_1_1_genes$chrom_lyr <- gsub("_", "", pannagram_1_1_genes$chrom_lyr)
+pannagram_1_1_genes$chrom_lyr <- gsub("scaffold", "", pannagram_1_1_genes$chrom_lyr)
+ggplot(pannagram_1_1_genes, aes(x = cum_pos_lyr, y = cum_pos_thal, color = as.factor(chrom_lyr))) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_hline(data = thal_lengths, aes(yintercept = cumsum(max_pos)), 
+             linetype = "dashed", color = "gray30", linewidth = 0.1) +
+  scale_x_continuous(labels = function(x) x / 1e6) +
+  scale_y_continuous(labels = function(x) x / 1e6) +
+  scale_color_manual(values = c("1" = "#FFFF38", 
+                                 "2" = "#E41A1C",
+                                 "3" = "blue",
+                                 "4" = "#F781BF",
+                                 "5" = "orange",
+                                 "6" = "darkgreen",
+                                 "7" = "lightblue",
+                                 "8" = "lightpink")) +
+  labs(
+    x = "A. lyrata position (Mbp)",
+    y = "A. thaliana position (Mbp)",
+    color = "A. lyrata\nchromosome"
+  ) +
+  theme_bw(base_size  = 16) +
+  theme(legend.position = "right")
+
+```
+
+We search for genes which appear to be transposed (single dots on the dotpot).
+
+The search works in the following way:
+
+For each syntenic gene we create a window around its position in A. thaliana, then we search genes using the following logic:
+
+Are there other genes from the **same *A. lyrata* chromosome** within my ***A. thaliana*** **window** that are at least window size away?
+
+The gene is classified as transposed if:
+
+1.  It is isolated. No other genes from the same *A. lyrata* chromosome are found nearby in the *A. thaliana* genome (within 300 kb, no genes)
+2.  It can have syntenic neighbors in *A. lyrata* meaning that the gene comes from the syntenic region (single moves without synthetic neighbors are also considered)
+
+```{r}
+identify_transposed_genes <- function(data, window_size = 250000, fixed_window_size = 500000) {
+  data <- data %>%
+    arrange(chrom_thal, start_thal) %>%
+    mutate(
+      # Gene-centered windows (existing)
+      window_start_thal = pmax(0, start_thal - window_size),
+      window_end_thal   = start_thal + window_size,        
+      window_start_lyr  = pmax(0, start_lyr - window_size),
+      window_end_lyr    = start_lyr + window_size,        
+      cumulative_window_start_thal = pmax(0, cum_pos_thal - window_size),
+      cumulative_window_end_thal   = cum_pos_thal + window_size,
+      cumulative_window_start_lyr  = pmax(0, cum_pos_lyr - window_size),
+      cumulative_window_end_lyr    = cum_pos_lyr + window_size,
+      # Fixed windows (new) 
+      # Assigns each gene to a fixed bin: 0-500000, 500000-1000000, etc.
+      fixed_window_start_thal = floor(start_thal / fixed_window_size) * fixed_window_size,
+      fixed_window_end_thal   = fixed_window_start_thal + fixed_window_size,
+      fixed_window_start_lyr  = floor(start_lyr  / fixed_window_size) * fixed_window_size,
+      fixed_window_end_lyr    = fixed_window_start_lyr  + fixed_window_size
+    ) %>%
+    mutate(
+      has_syntenic_neighbors_thal = sapply(1:n(), function(i) {
+        sum(
+          chrom_thal == chrom_thal[i] &
+          chrom_lyr  == chrom_lyr[i] &
+          start_thal >= window_start_thal[i] &
+          start_thal <= window_end_thal[i] &
+          seq_len(n()) != i
+        ) > 0
+      }),
+      
+      has_syntenic_neighbors_lyr = sapply(1:n(), function(i) {
+        sum(
+          chrom_lyr  == chrom_lyr[i] &
+          chrom_thal == chrom_thal[i] &
+          start_lyr >= window_start_lyr[i] &
+          start_lyr <= window_end_lyr[i] &
+          seq_len(n()) != i
+        ) > 0
+      }),
+      
+      is_transposed = !has_syntenic_neighbors_thal
+    )
+  
+  return(data)
+}
+
+pannagram_1_1_genes <- identify_transposed_genes(pannagram_1_1_genes, 
+                                                  window_size = 250000, 
+                                                  fixed_window_size = 500000)
+```
+
+```{r}
+# Fixed window gene counts - THAL
+genes_per_fixed_window_thal <- pannagram_1_1_genes %>%
+  group_by(chrom_thal, fixed_window_start_thal, fixed_window_end_thal) %>%
+  summarise(n_genes_thal = n_distinct(gene_thal), .groups = "drop") %>%
+  arrange(chrom_thal, fixed_window_start_thal)
+
+# Fixed window gene counts - LYR
+genes_per_fixed_window_lyr <- pannagram_1_1_genes %>%
+  group_by(chrom_lyr, fixed_window_start_lyr, fixed_window_end_lyr) %>%
+  summarise(n_genes_lyr = n_distinct(gene_thal), .groups = "drop") %>%
+  arrange(chrom_lyr, fixed_window_start_lyr)
+```
+
+Transposed genes with their relative position
+
+```{r}
+ggplot(pannagram_1_1_genes, aes(x = cum_pos_lyr, y = cum_pos_thal)) +
+  geom_hline(data = thal_lengths, aes(yintercept = cumsum(max_pos)), 
+             linetype = "dashed", color = "gray30", linewidth = 0.3) +
+  
+  # Plot non-transposed genes in gray
+  geom_point(data = subset(pannagram_1_1_genes, !is_transposed),
+             shape = 21, fill = NA, color = "gray70",
+             alpha = 0.3, size = 2, stroke = 0.8) +
+  
+  # Plot transposed genes in colorblind-friendly color
+  geom_point(data = subset(pannagram_1_1_genes, is_transposed),
+             shape = 21, fill = "#5C5470", color = "black", 
+             size = 2.5, alpha = 0.9, stroke = 1.5) +
+  
+  scale_x_continuous(labels = function(x) x / 1e6) +
+  scale_y_continuous(labels = function(x) x / 1e6) +
+  
+  labs(
+    x = "A. lyrata position (Mbp)",
+    y = "A. thaliana position (Mbp)"
+  ) +
+  theme_bw(base_size = 16) +
+  theme(legend.position = "none")
+
+```
+
+We calculate nucleotide diversity in the corresponding windows using synonymous sites.
+
+```{r}
+# Sploit genes in high-high , high-low and see correlation 
+# How z scores are correlated? How jumped dots are correlated?  
+# Without z score, how they are correlated? 
+
+library(data.table)
+# Read pi in synonymous sites 
+pi_4fold_thal <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_div_thal_lyr/4fol_sites_thal_27g_tair10_based_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+pi_4fold_lyr <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_div_thal_lyr/4fol_sites_lyr_31g_mn47_based_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+genes_athaliana <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")  %>% filter(V3=="gene")
+```
+
+```{r}
+library(data.table)
+# Convert to data.table for speed
+genes_dt <- as.data.table(pannagram_1_1_genes)
+pi_thal_dt <- as.data.table(pi_4fold_thal)
+pi_lyr_dt <- as.data.table(pi_4fold_lyr)
+
+# Add gene IDs
+genes_dt[, gene_id := .I]
+
+# THALIANA - Gene pi
+genes_dt[, chr_thal := paste0("Chr", chrom_thal)]
+setkey(pi_thal_dt, chromosome, window_pos_1)
+
+gene_pi_thal <- pi_thal_dt[genes_dt, 
+  on = .(chromosome = chr_thal, 
+         window_pos_1 >= start_thal, 
+         window_pos_1 <= end_thal),
+  .(count_diffs = sum(count_diffs), 
+    count_comparisons = sum(count_comparisons)),
+  by = .EACHI]
+
+gene_pi_thal[, pi_gene_thal := count_diffs / count_comparisons]
+
+# THALIANA - Window pi
+window_pi_thal <- pi_thal_dt[genes_dt,
+  on = .(chromosome = chr_thal,
+         window_pos_1 >= window_start_thal,
+         window_pos_1 <= window_end_thal),
+  .(count_diffs = sum(count_diffs),
+    count_comparisons = sum(count_comparisons),
+    n_sites_window_thal = .N),
+  by = .EACHI]
+
+window_pi_thal[, pi_window_thal := count_diffs / count_comparisons]
+
+# LYRATA - Gene pi
+genes_dt[, chr_lyr := paste0("Chr", chrom_lyr)]
+
+gene_pi_lyr <- pi_lyr_dt[genes_dt,
+  on = .(chromosome = chr_lyr,
+         window_pos_1 >= start_lyr,
+         window_pos_1 <= end_lyr),
+  .(count_diffs = sum(count_diffs),
+    count_comparisons = sum(count_comparisons)),
+  by = .EACHI]
+
+gene_pi_lyr[, pi_gene_lyr := count_diffs / count_comparisons]
+
+# LYRATA - Window pi
+window_pi_lyr <- pi_lyr_dt[genes_dt,
+  on = .(chromosome = chr_lyr,
+         window_pos_1 >=window_start_lyr,
+         window_pos_1 <= window_end_lyr),
+  .(count_diffs = sum(count_diffs),
+    count_comparisons = sum(count_comparisons),
+   n_sites_window_lyr = .N),
+  by = .EACHI]
+
+window_pi_lyr[, pi_window_lyr := count_diffs / count_comparisons]
+
+# Add results back
+pannagram_1_1_genes$pi_gene_thal <- gene_pi_thal$pi_gene_thal
+pannagram_1_1_genes$pi_window_thal <- window_pi_thal$pi_window_thal
+pannagram_1_1_genes$n_sites_window_thal <- window_pi_thal$n_sites_window_thal
+pannagram_1_1_genes$pi_gene_lyr <- gene_pi_lyr$pi_gene_lyr
+pannagram_1_1_genes$pi_window_lyr <- window_pi_lyr$pi_window_lyr
+pannagram_1_1_genes$n_sites_window_lyr<- window_pi_lyr$n_sites_window_lyr
+```
+
+Where are transposed genes in the genome of A. thaliana?
+
+```{r}
+# chromosome boundary positions
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+
+df <- pannagram_1_1_genes %>% filter(is_transposed == TRUE)
+
+lyr_bounds  <- df %>% group_by(chrom_lyr)  %>% summarise(x = max(cum_pos_lyr)  / 1e6)
+thal_bounds <- df %>% group_by(chrom_thal) %>% summarise(x = max(cum_pos_thal) / 1e6)
+
+med_lyr  <- median(df$pi_window_lyr,  na.rm = TRUE)
+med_thal <- median(df$pi_window_thal, na.rm = TRUE)
+
+# ── TOP: lyrata ───────────────────────────────────────────────────────────────
+p_lyr <- df %>%
+  arrange(cum_pos_lyr) %>%
+  ggplot(aes(x = cum_pos_lyr / 1e6, y = pi_window_lyr)) +
+  geom_vline(data = lyr_bounds, aes(xintercept = x), linetype = "dashed", color = "gray50", linewidth = 0.3) +
+  geom_ribbon(aes(ymin = med_lyr, ymax = pmax(pi_window_lyr, med_lyr)),
+              fill = "#285A48", alpha = 0.3) +
+  geom_line(color = "#285A48", linewidth = 0.5, alpha = 0.7) +
+  geom_point(size = 1.5) +
+  geom_hline(yintercept = med_lyr, color = "black", linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = Inf, y = med_lyr, label = paste0("", round(med_lyr, 4)),
+           hjust = 1.1, vjust = -0.5, color = "black", size = 3.5) +
+  xlab(NULL) + ylab("π in A. lyrata") +
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# ── BOTTOM: thaliana ──────────────────────────────────────────────────────────
+p_thal <- df %>%
+  arrange(cum_pos_thal) %>%
+  ggplot(aes(x = cum_pos_thal / 1e6, y = pi_window_thal)) +
+  geom_vline(data = thal_bounds, aes(xintercept = x), linetype = "dashed", color = "gray50", linewidth = 0.3) +
+  geom_ribbon(aes(ymin = med_thal, ymax = pmax(pi_window_thal, med_thal)),
+              fill = "#285A48", alpha = 0.3) +
+  geom_line(color = "#285A48", linewidth = 0.5, alpha = 0.7) +
+  geom_point(size = 1.5) +
+  geom_hline(yintercept = med_thal, color = "black", linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = Inf, y = med_thal, label = paste0(" ", round(med_thal, 4)),
+           hjust = 1.1, vjust = -0.5, color = "black", size = 3.5) +
+  xlab("Cumulative position (Mbp)") + ylab("π in A. thaliana") +
+  theme_bw()
+
+p_lyr / p_thal
+```
+
+Distance between transposed genes in A. thaliana genome
+
+```{r}
+# Calculate distance to next gene on the same chromosome
+pannagram_1_1_genes <- pannagram_1_1_genes %>%
+  arrange(chrom_thal, start_thal) %>%
+  group_by(chrom_thal) %>%
+  mutate(
+    next_gene_start = lead(start_thal),
+    distance_to_next_gene_thal = next_gene_start - end_thal
+  ) %>%
+  ungroup()
+
+pannagram_1_1_genes %>% 
+  filter(is_transposed == "TRUE") %>% 
+  ggplot(aes(x = window_start_thal, y = pi_window_thal)) +
+  geom_point(aes(color = distance_to_next_gene_thal)) +
+  theme_minimal()+facet_wrap(~chrom_thal, ncol=1)
+```
+
+Windows
+
+```{r}
+pannagram_1_1_genes$distanse_win <- pannagram_1_1_genes$window_end_thal-pannagram_1_1_genes$window_start_thal
+hist(pannagram_1_1_genes$distanse_win)
+```
+
+```{r}
+# Genes per window for THAL
+# Genes per window for THAL
+hist(pannagram_1_1_genes$n_sites_window_thal)
+hist(pannagram_1_1_genes$n_sites_window_lyr)
+
+pannagram_1_1_genes <- pannagram_1_1_genes[pannagram_1_1_genes$n_sites_window_thal>5000 & pannagram_1_1_genes$n_sites_window_lyr > 5000,]
+
+# Calculate how many genes per window 
+genes_athaliana$gene_thal <- gsub(".*;Name=", "", genes_athaliana$V9)
+genes_athaliana$chrom_thal <- as.numeric(gsub("Chr", "",genes_athaliana$V1 ))
+
+genes_in_windows <- pannagram_1_1_genes %>%
+  left_join(genes_athaliana, by = join_by(chrom_thal)) %>%
+  filter(V4 >= window_start_thal & V5 <= window_end_thal,)
+
+# Count genes per window
+gene_counts <- genes_in_windows %>%
+  group_by(window_start_thal, chrom_thal) %>%
+  summarise(n_genes = n(), .groups = "drop")
+
+pannagram_1_1_genes <- left_join(pannagram_1_1_genes, gene_counts, 
+                                  by = c("window_start_thal", "chrom_thal"))
+
+pannagram_1_1_genes_transposed_counts <-pannagram_1_1_genes[pannagram_1_1_genes$is_transposed=="TRUE",]
+pannagram_1_1_genes_transposed_counts$n_genes
+```
+
+Then we can add diversity levels to the x and y axes to see visually if the single moved genes came from the same change or not their diversity neighborhood
+
+```{r}
+
+safe_colorblind_palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
+                             "#44AA99", "#999933", "#882255", "#661100", "#6699CC", "#888888")
+
+median_pi_thal <- median(pannagram_1_1_genes$pi_window_thal, na.rm = TRUE)
+median_pi_lyr <- median(pannagram_1_1_genes$pi_window_lyr, na.rm = TRUE)
+
+# Get axis limits from data
+y_limits <- range(pannagram_1_1_genes$cum_pos_thal)
+x_limits <- range(pannagram_1_1_genes$cum_pos_lyr)
+
+# Identify regions above median
+high_pi_thal <- pannagram_1_1_genes %>%
+  filter(pi_window_thal > median_pi_thal)
+
+high_pi_lyr <- pannagram_1_1_genes %>%
+  filter(pi_window_lyr > median_pi_lyr)
+
+# Main dot plot
+p_main <- ggplot(pannagram_1_1_genes, aes(x = cum_pos_lyr, y = cum_pos_thal)) +
+  geom_hline(data = thal_lengths, aes(yintercept = cumsum(max_pos)), 
+             linetype = "solid", color = "gray30", linewidth = 1) +
+  # Add vertical lines for high π lyrata
+  geom_vline(data = high_pi_lyr, aes(xintercept = cum_pos_lyr),
+             color = "#CC6677", alpha = 0.02, linewidth = 0.5) +
+  # Add horizontal lines for high π thaliana
+  geom_hline(data = high_pi_thal, aes(yintercept = cum_pos_thal),
+             color = "#117733", alpha = 0.02, linewidth = 0.5) +
+  geom_point(data = subset(pannagram_1_1_genes, !is_transposed),
+             shape = 21, fill = NA, color = "#999999",
+             alpha = 0.3, size = 2, stroke = 0.8) +
+  geom_point(data = subset(pannagram_1_1_genes, is_transposed),
+             shape = 21, fill = "gray30", color = "gray30", 
+             size = 2.5, alpha = 0.9, stroke = 1.5) +
+  scale_x_continuous(labels = function(x) x / 1e6, limits = x_limits) +
+  scale_y_continuous(labels = function(x) x / 1e6, limits = y_limits) +
+  labs(x = "A. lyrata position (Mbp)", y = "A. thaliana position (Mbp)") +
+  theme_bw(base_size = 16) +
+  theme(legend.position = "none",
+        plot.margin = margin(5, 5, 5, 5))
+
+# Right plot - Thaliana diversity (aligned with y-axis)
+p_right <- ggplot(pannagram_1_1_genes, aes(x = cumulative_window_start_thal, y = pi_window_thal)) +
+  geom_ribbon(aes(ymin = median_pi_thal, 
+                  ymax = pmax(pi_window_thal, median_pi_thal)),
+              fill = "#117733", alpha = 0.5) +
+  geom_line(color = "#117733", linewidth = 1, alpha = 0.5) +
+  geom_hline(yintercept = median_pi_thal, linetype = "dashed", color = "red", linewidth = 0.8) +
+  scale_x_continuous(limits = y_limits) +  # Match main plot y-axis
+  labs(x = "π Thal", y = "") +
+  theme_bw(base_size = 12) +
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.margin = margin(5, 0, 5, 5)) +
+  coord_flip()
+
+# Top plot - Lyrata diversity (aligned with x-axis)
+p_top <- ggplot(pannagram_1_1_genes, aes(x = cumulative_window_start_lyr, y = pi_window_lyr)) +
+  geom_ribbon(aes(ymin = median_pi_lyr, 
+                  ymax = pmax(pi_window_lyr, median_pi_lyr)),
+              fill = "#CC6677", alpha = 0.5) +
+  geom_line(color = "#CC6677", linewidth = 1, alpha = 0.5) +
+  geom_hline(yintercept = median_pi_lyr, linetype = "dashed", color = "red", linewidth = 0.8) +
+  scale_x_continuous(limits = x_limits) +  # Match main plot x-axis
+  labs(y = "π Lyr", x = "") +
+  theme_bw(base_size = 12) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.margin = margin(5, 5, 0, 5))
+
+# Combine with patchwork
+library(patchwork)
+p_top + plot_spacer() + p_main + p_right + 
+  plot_layout(ncol = 2, nrow = 2, widths = c(4, 1), heights = c(1, 4))
+```
+
+We distribute these genes in the following categories:
+
+-   High diversity of the neighborhood in *A. thaliana* and high diversity of the gene ( relative to the mean in A. thaliana) -\> gene lives in the high diversity neighborhood
+
+-   Low diversity of the neighborhood in *A. thaliana* and low diversity of the gene ( relative to the mean in A. thaliana) -\> gene lives in the low diversity neighborhood
+
+    We do the same with *A. lyrata*
+
+-   High diversity of the neighborhood in *A. lyrata* and high diversity of the gene ( relative to the mean in *A. lyrata*) -\> gene lives in the high diversity neighborhood
+
+-   Low diversity of the neighborhood in *A. lyrata* and low diversity of the gene ( relative to the mean in *A. lyrata*) -\> gene lives in the low diversity neighborhood
+
+```{r}
+library(tidyr)
+median_pi_thal <- median(pannagram_1_1_genes$pi_window_thal, na.rm = TRUE)
+median_pi_lyr  <- median(pannagram_1_1_genes$pi_window_lyr,  na.rm = TRUE)
+
+transposed_genes_combined <- pannagram_1_1_genes %>%
+  mutate(
+    context_thal = case_when(
+      pi_window_thal > median_pi_thal ~ "high_thal",
+      pi_window_thal < median_pi_thal ~ "low_thal",
+      pi_window_thal == median_pi_thal ~ "median_thal"
+    ),
+    context_lyr = case_when(
+      pi_window_lyr > median_pi_lyr ~ "high_lyr",
+      pi_window_lyr < median_pi_lyr ~ "low_lyr",
+      pi_window_lyr == median_pi_lyr ~ "median_lyr"
+    ),
+    context_combined = case_when(
+      pi_window_thal > median_pi_thal & pi_window_lyr > median_pi_lyr ~ "high_high",
+      pi_window_thal > median_pi_thal & pi_window_lyr < median_pi_lyr ~ "high_low",
+      pi_window_thal < median_pi_thal & pi_window_lyr > median_pi_lyr ~ "low_high",
+      pi_window_thal < median_pi_thal & pi_window_lyr < median_pi_lyr ~ "low_low",
+      TRUE ~ "median"  # catches any exact median ties
+    )
+  )
+
+plot_data <- transposed_genes_combined %>%
+  mutate(
+    # Z-scale within each species separately
+    # thal: scale gene pi relative to all thal genes
+    scaled_pi_thal_gene   = (pi_gene_thal   - mean(pi_gene_thal,   na.rm=TRUE)) / sd(pi_gene_thal,   na.rm=TRUE),
+    scaled_pi_thal_neighb = (pi_window_thal - mean(pi_window_thal, na.rm=TRUE)) / sd(pi_window_thal, na.rm=TRUE),
+    # lyr: scale gene pi relative to all lyr genes
+    scaled_pi_lyr_gene    = (pi_gene_lyr    - mean(pi_gene_lyr,    na.rm=TRUE)) / sd(pi_gene_lyr,    na.rm=TRUE),
+    scaled_pi_lyr_neighb  = (pi_window_lyr  - mean(pi_window_lyr,  na.rm=TRUE)) / sd(pi_window_lyr,  na.rm=TRUE),
+    # Difference between neighbourhoods
+    lyr_neighb_thal_neighb = scaled_pi_lyr_neighb - scaled_pi_thal_neighb,
+    # Difference between genes
+    lyr_gene_thal_gene     = scaled_pi_lyr_gene   - scaled_pi_thal_gene,
+    # Gene in new environment vs new neighbourhood
+    lyr_gene_thal_neighb   =  scaled_pi_lyr_gene - scaled_pi_thal_neighb
+  )
+# plot 
+plot_data %>%
+  filter(is_transposed == TRUE) %>%
+  pivot_longer(
+    cols = c(lyr_gene_thal_gene, lyr_neighb_thal_neighb,lyr_gene_thal_neighb),
+    names_to = "environment",
+    values_to = "delta_pi_scaled"
+  ) %>%
+  ggplot(aes(x = environment, y = delta_pi_scaled, fill = context_combined)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.8, outlier.shape = NA) +
+  scale_x_discrete(labels = c(
+    "delta_pi_scaled_old_env" = "Old Environment",
+    "delta_pi_scaled_new_env" = "New Environment"
+  )) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    x = "Environment",
+    y = "Scaled Delta Pi",
+    fill = "Context",
+    title = ""
+  ) +
+  theme_bw()
+
+
+```
+
+```{r}
+library(ggpubr)
+
+plot_data %>%
+  filter(is_transposed == FALSE) %>%
+  ggplot(aes(pi_gene_lyr, pi_gene_thal)) +
+  geom_point(alpha = 0.2) +
+  geom_smooth() +
+  stat_cor(method = "pearson", label.x.npc = "left", label.y.npc = "top",
+         aes(label = after_stat(r.label))) +xlab("gene pi A.lyrata") + ylab("gene pi A. thaliana")+theme_bw(base_size = 16)+facet_wrap(~context_combined, scales = "free")
+
+```
+
+Hypothesis of gene moves from the one context to the other:
+
+1.  Genes that have moved will now match its current “diversity environment” simply as a consequence of background selection.
+
+2.  Genes that move to a different “diversity environment” will be selected against, and hence under-represented relative to genes that moved to the same environment and that were not thusly selected.
+
+    To test this hypothesis we show the enrichment of the transposed genes in the 4 categories:
+
+    -   gene is from high environment in A.lyrata ended up in high environment in A. thaliana
+
+    -   gene is from low environment in A.lyrata ended up in low environment in A. thaliana
+
+        These two categories would be enriched. The following two expected to be underrepresented
+
+    -   gene is from low environment in A.lyrata ended up in high environment in A. thaliana
+
+    -   gene is from high environment in A.lyrata ended up in low environment in A. thaliana
+
+To test this, we create a contingency table with transposed genes according to their categories and percentage of the aligned genes which are in high or low category
+
+Then we do a chisquare test?
+
+```{r}
+# Calculate proportion of the genes in high thal and high lyr
+n_total <- nrow(plot_data)
+
+# p = proportion of genes in high neighbourhood
+p_thal <- sum(plot_data$context_thal == "high_thal", na.rm = TRUE) / n_total
+p_lyr  <- sum(plot_data$context_lyr  == "high_lyr",  na.rm = TRUE) / n_total
+
+# Expected proportions under independence
+expected_high_high <- p_thal * p_lyr
+expected_low_low   <- (1 - p_thal) * (1 - p_lyr)
+expected_high_low  <- p_thal * (1 - p_lyr)
+expected_low_high  <- (1 - p_thal) * p_lyr
+
+# Sanity check - should sum to 1
+cat("Sum of expected:", expected_high_high + expected_low_low + 
+                        expected_high_low  + expected_low_high, "\n")
+
+# Observed in transposed genes
+transposed_only <- plot_data %>%
+  filter(is_transposed == TRUE)
+n_transposed <- nrow(transposed_only)
+
+comparison <- data.frame(
+  transition    = c("high_high", "low_low", "high_low", "low_high"),
+  observed_n    = c(
+    sum(transposed_only$context_combined == "high_high"),
+    sum(transposed_only$context_combined == "low_low"),
+    sum(transposed_only$context_combined == "high_low"),
+    sum(transposed_only$context_combined == "low_high")
+  ),
+  expected_prop = c(expected_high_high, expected_low_low, 
+                    expected_high_low,  expected_low_high)
+) %>%
+  mutate(
+    observed_prop = observed_n / n_transposed,
+    expected_n    = expected_prop * n_transposed,
+    enrichment    = observed_prop / expected_prop,
+    environment   = ifelse(transition %in% c("high_high", "low_low"), 
+                           "same", "different")
+  )
+
+print(comparison)
+
+# Chi-square with 4 categories now
+chisq_hw <- chisq.test(
+  x = comparison$observed_n,
+  p = comparison$expected_prop
+)
+print(chisq_hw)
+```
+
+In which categories transposed genes are enriched?
+
+```{r}
+# Pivot to long format for plotting
+comparison_long <- comparison %>%
+  pivot_longer(
+    cols = c(observed_prop, expected_prop),
+    names_to = "type",
+    values_to = "proportion"
+  ) %>%
+  mutate(
+    type = recode(type,
+      "observed_prop" = "Observed",
+      "expected_prop" = "Expected"
+    )
+  )
+
+ggplot(comparison_long, aes(x = transition, y = proportion, fill = type)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = paste0("n = ", round(proportion * n_transposed))),
+            position = position_dodge(width = 0.6),
+            vjust = -0.5, size = 3.5) +
+  scale_fill_manual(values = c("Observed" = "#E69F00", 
+                                "Expected"  = "#56B4E9")) +
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    x    = "Context",
+    y    = "Proportion",
+    fill = NULL,
+  ) +
+  theme_bw() 
+
+```
+
+Moved VS not moved genes. Is the transposition is the context associated with transposition?
+
+Is the distribution across diversity contexts different between transposed and non-transposed genes?
+
+Null hypothesis:Transposed genes follow genome-wide background rates
+
+```{r}
+# Build contingency table: transposed vs non-transposed across 4 contexts
+contingency <- plot_data %>%
+  filter(!is.na(context_combined)) %>%
+  count(is_transposed, context_combined) %>%
+  pivot_wider(names_from = context_combined, values_from = n, values_fill = 0)
+
+print(contingency)
+
+# Chi-square test of independence: is transposition distribution
+# different between transposed and non-transposed genes?
+chisq_contingency <- chisq.test(
+  table(plot_data$is_transposed, plot_data$context_combined)
+)
+print(chisq_contingency)
+
+# Enrichment: observed / expected per group
+enrich_table <- as.data.frame(chisq_contingency$observed) %>%
+  rename(observed = Freq) %>%
+  mutate(
+    expected   = as.vector(chisq_contingency$expected),
+    enrichment = observed / expected
+  )
+
+chisq_contingency
+
+
+```
+
+```{r}
+enrich_long <- enrich_table %>%
+  rename(transition = Var2,
+         is_transposed = Var1) %>%  
+  group_by(is_transposed) %>%
+  mutate(proportion = observed / sum(observed)) %>%
+  ungroup()
+
+ggplot(enrich_long, aes(x = transition, y = proportion, fill = is_transposed)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = paste0("n = ", observed)),
+            position = position_dodge(width = 0.6),
+            vjust = -0.5, size = 3.5) +
+  scale_fill_manual(values = c("TRUE" = "#E69F00", "FALSE" = "#56B4E9"),
+                    labels = c("TRUE" = "Transposed", "FALSE" = "Non-transposed")) +
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    x    = "Context",
+    y    = "Proportion of Genes",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+Enrichment for the transposed genes
+
+```{r}
+write.table(plot_data, "/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/syntenic_and_transposed_genes.txt", quote = F, row.names = F)
+```

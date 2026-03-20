@@ -1,0 +1,166 @@
+---
+title: "000_define_peric_boundaries"
+output: html_document
+date: "2024-08-27"
+---
+
+# Upload packages 
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyverse)
+```
+# Read mercier data (1Mb ,female and male crossovers)
+```{r}
+female <- read.table("/groups/nordborg/projects/genome_organization/01_data/crossover_data_mercier/4314_ABCDEF.final.snp.ABEF.phase_v9.2.7.refinedCOs.hap.female.COs_freq_rand_chr.fl3.w1000s50.txt")
+male <- read.table("/groups/nordborg/projects/genome_organization/01_data/crossover_data_mercier/4314_ABCDEF.final.snp.ABEF.phase_v9.2.7.refinedCOs.hap.male.COs_freq_rand_chr.fl3.w1000s50.txt")
+## Get average crossover 1Mbp (join)
+female_and_male <- inner_join(female,male, by=c("V1", "V3", "V4"), suffix=c("_female", "_male"))
+## Get 1Mbp windows (since 50kb step * 20 = 1Mb)
+library(dplyr)
+
+non_overlapping <- female_and_male %>%
+  group_by(V1) %>%
+  slice(seq(1, n(), by = 20)) %>%
+  ungroup()
+non_overlapping
+# Get average crossovers
+non_overlapping <- non_overlapping %>% 
+  group_by(V1, V3, V4) %>% 
+  mutate(avg_co = mean(c(V6_female, V6_male))) %>%
+  ungroup()
+```
+## Plot average crossovers 
+```{r}
+ggplot(non_overlapping, aes(V3, avg_co))+ geom_line()+facet_wrap(~V1, ncol=3)+xlab("Mbp ")+ylab("cM/Mb")+ scale_y_continuous(labels = function(x) format(x, scientific = FALSE))
+
+##Correlate with pi
+
+pi4_and_rec_rates <- inner_join(
+  pi4_fold_thal, 
+  non_overlapping, 
+  by = c("Chromosome" = "V1", "window_start" = "V3")
+)
+# Plot
+ggplot(pi4_and_rec_rates, aes(x = window_start / 1e6)) +  # Convert to Mb
+  geom_line(aes(y = avg_pi_win, color = "Average Pi")) +
+  geom_line(aes(y = avg_co / max(avg_co, na.rm = TRUE) * max(avg_pi_win, na.rm = TRUE), color = "cM/Mb")) +
+  scale_x_continuous(name = "Position (Mb)", labels = comma) +  # Format x-axis
+  scale_y_continuous(
+    name = "Average Pi",
+    labels = comma,
+    sec.axis = sec_axis(
+      ~ . * max(pi4_and_rec_rates$avg_co, na.rm = TRUE) / max(pi4_and_rec_rates$avg_pi_win, na.rm = TRUE), 
+      name = "cM/Mb",
+      labels = comma
+    )
+  ) +
+  scale_color_manual(values = c("Average Pi" = "#4F1787", "cM/Mb" = "#C63C51")) +
+  labs(color = "") +
+  theme_minimal() +
+  theme(
+    axis.title.y.left = element_text(color = "#4F1787"),
+    axis.title.y.right = element_text(color = "#C63C51")
+  ) +
+  facet_wrap(~Chromosome, nrow = 2, scales = "free_x")
+
+### Write as an output crossovers 
+non_overlapping <- non_overlapping %>% select(V1,V3,V4,avg_co)
+colnames(non_overlapping) <- c("Chr", "start", "end", "avg_co")
+non_overlapping$avg_co <-non_overlapping$avg_co*100
+write.table(non_overlapping, "/groups/nordborg/projects/genome_organization/01_data/crossover_data_mercier/female_male1mb_non_overlapping_crossovers.csv", sep="\t",quote = F, row.names = F)
+
+
+ggplot(non_overlapping, aes(start, avg_co))+ geom_line()+facet_wrap(~Chr, ncol=3)+xlab("Mbp ")+ylab("cM/Mb")+ scale_y_continuous(labels = function(x) format(x, scientific = FALSE))
+```
+
+
+
+
+
+# Read data (only 4 fold sites)
+```{r}
+co_data <- read.table("/groups/nordborg/projects/genome_organization/01_data/crossover_data_mercier/crossovers_col0_mercier.csv", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+```
+# Prepare data
+```{r}
+# Select necessary columns 
+co_data <- co_data %>% select(Group,Sample,Chromosome,Breakpoint_Start_Pos,Breakpoint_Stop_Pos)
+# Generate a random point in the breakpoint range 
+co_data$co_point <- sapply(1:nrow(co_data), function(i) sample(co_data$Breakpoint_Start_Pos[i]:co_data$Breakpoint_Stop_Pos[i], 1))
+```
+# Calculate female and male COs
+```{r}
+# Calculate cM; arrange number of COs on the interval 
+window_size <- 1000000 # specify the size
+co_data$window_start <- (co_data$co_point %/% window_size) * window_size + 1
+co_data$window_end <- co_data$window_start + window_size - 1
+
+# Calculate number of crossovers in the interval 
+co_data$Group <- gsub("Col_female.*", "female", co_data$Group)
+co_data$Group <- gsub("Col_male.*", "male", co_data$Group)
+# Calculate number of COs
+co_data_calc <- co_data %>% 
+  group_by(Group, window_start, window_end, Chromosome) %>%
+  dplyr::summarise(count=n(),.groups="keep")
+```
+
+Caclulate cM (make average for male and female)
+```{r}
+# Get number of samples 
+co_data %>%
+  filter(Group == "female") %>%
+  pull(Sample) %>%
+  unique() %>%
+  str()
+
+# Calc centimorgans 
+centimorgans <- co_data_calc %>% group_by(Group,window_start, window_end, Chromosome)  %>% dplyr::summarise(cm=((count/309)*100))
+# get average value of female and male population 
+centimorgans <- centimorgans %>% group_by(window_start, window_end, Chromosome) %>%dplyr::summarise(cm_mean=mean(cm))
+# Plot 
+ggplot(centimorgans, aes(window_start, cm_mean))+ geom_line()+facet_wrap(~Chromosome, ncol=3)+xlab("Mbp ")+ylab("cM/Mb")+ scale_y_continuous(labels = function(x) format(x, scientific = FALSE))
+```
+# Show recombination rate and diversity on one plot 
+```{r}
+# Read diversity data
+pi4_fold_thal <-  read.table("/groups/nordborg/projects/genome_organization/03_processing/005_27g_thaliana_lyrata_dxy/pixy_dxy_orth_genes_pi_orth_genes/4fol_orth_genes_phytozome_pi.txt", header=T, sep='\t')
+pi4_fold_thal<-pi4_fold_thal[pi4_fold_thal$pop=="POP1",]
+# Introduce pi4_fold_thal
+pi4_fold_thal <- pi4_fold_thal %>%
+  mutate(window_start= (window_pos_1 %/% 1000000) * 1000000 + 1,
+         window_end = window_start + 999999)
+
+pi4_fold_thal <- pi4_fold_thal %>%
+  group_by(chromosome, window_start, window_end) %>%
+  dplyr::summarise( avg_pi_win = mean(avg_pi) %>% na.omit())
+names(pi4_fold_thal)[names(pi4_fold_thal) == "chromosome"] <- "Chromosome"
+```
+# Plot together
+```{r}
+# Join
+pi4_and_rec_rates <- inner_join(pi4_fold_thal,centimorgans, by=c("Chromosome", "window_start", "window_end"))
+# Plot
+ggplot(pi4_and_rec_rates, aes(x = window_start / 1e6)) +  # Convert to Mb
+  geom_line(aes(y = avg_pi_win, color = "Average Pi")) +
+  geom_line(aes(y = cm_mean / max(cm_mean, na.rm = TRUE) * max(avg_pi_win, na.rm = TRUE), color = "cM/Mb")) +
+  scale_x_continuous(name = "Position (Mb)", labels = comma) +  # Format x-axis
+  scale_y_continuous(
+    name = "Average Pi",
+    labels = comma,
+    sec.axis = sec_axis(
+      ~ . * max(pi4_and_rec_rates$cm_mean, na.rm = TRUE) / max(pi4_and_rec_rates$avg_pi_win, na.rm = TRUE), 
+      name = "cM/Mb",
+      labels = comma
+    )
+  ) +
+  scale_color_manual(values = c("Average Pi" = "#4F1787", "cM/Mb" = "#C63C51")) +
+  labs(color = "") +
+  theme_minimal() +
+  theme(
+    axis.title.y.left = element_text(color = "#4F1787"),
+    axis.title.y.right = element_text(color = "#C63C51")
+  ) +
+  facet_wrap(~Chromosome, nrow = 2, scales = "free_x")
+```
+
+

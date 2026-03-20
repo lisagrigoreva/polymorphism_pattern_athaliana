@@ -1,0 +1,74 @@
+---
+title: "003_transposed_genes_enrichment"
+output: html_document
+date: "2026-03-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Read transposed genes table 
+```{r}
+BiocManager::install("clusterProfiler")
+organism = "org.At.tair.db"
+BiocManager::install(organism, character.only = TRUE)
+library(clusterProfiler)
+transposed_genes <- fread("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/syntenic_and_transposed_genes.txt")
+```
+Run Gene Ontology in R 
+```{r}
+library(clusterProfiler)
+library(org.At.tair.db)
+library(ggplot2)
+transposed_genes_thaliana <- transposed_genes[transposed_genes$is_transposed=="TRUE" & transposed_genes$context_combined=="low_low",]
+
+background_genes <- transposed_genes$gene_thal
+
+ego <- enrichGO(gene          = transposed_genes_thaliana$gene_thal,
+                universe      = background_genes,
+                OrgDb         = org.At.tair.db,
+                keyType       = "TAIR",
+                ont           = "ALL",
+                pAdjustMethod = "none")
+
+# plot
+dotplot(ego)
+barplot(ego, showCategory = 20)
+```
+
+```{r}
+library(gprofiler2)
+
+# get your gene list
+transposed_genes_thaliana <- transposed_genes[
+  transposed_genes$is_transposed == "FALSE" & 
+  transposed_genes$context_combined == "low_low", ]
+
+# run enrichment
+gost_results <- gost(
+  query = transposed_genes_thaliana$gene_thal,
+  organism = "athaliana",          # Arabidopsis thaliana
+  sources = c("GO:BP", "GO:MF", "GO:CC"),  # adjust as needed
+  significant = TRUE,
+  correction_method = "fdr"        # or "bonferroni", "none"
+)
+
+# plot
+gost_results$result %>%
+  arrange(p_value) %>%
+  head(20) %>%
+  ggplot(aes(x = -log10(p_value), y = reorder(term_name, -p_value), 
+             color = source, size = intersection_size)) +
+  geom_point() +
+  labs(x = "-log10(p-value)", y = "", size = "Gene count", color = "Source") +
+  theme_bw()+facet_wrap(~source)
+```
+
+
+
+
+
+
+
+
+

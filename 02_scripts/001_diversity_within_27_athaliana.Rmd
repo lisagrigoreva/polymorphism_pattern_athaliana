@@ -1,0 +1,1197 @@
+---
+title: "001_diversity_27_thalianas"
+output: html_document
+date: "2024-03-22"
+---
+
+# Upload packages 
+```{r setup, include=FALSE}
+library(plyr,quietly = T)
+library(stringi,quietly = T)
+library(data.table,quietly = T)
+library(tools,quietly = T)
+library(data.table,quietly = T)
+library(stringdist,quietly = T)
+library(stringr,quietly = T)
+library(ggplot2, quietly = T)
+library(dplyr, quietly = T)
+library(gridExtra,quietly = T)
+library(ggpubr,quietly = T)
+library(cowplot,quietly = T)
+library(patchwork,quietly = T)
+library(grid,quietly = T)
+library(Cairo,quietly = T)
+library(magrittr,quietly = T)
+library(tidyr)
+library(broom)
+library(Cairo)
+library(data.table)
+library(dplyr)
+library(scales)
+library(tidyr)
+```
+# Read data (diversity within A.thaliana)
+```{r}
+# Read data 
+pi_4fold_thal <- fread("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_27g/seq_all_snps.biallelic_and_non_variable.changed_27g_thaliana_4_fold_sites_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+pi_genes_thal <- fread("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_27g/seq_all_snps.biallelic_and_non_variable.changed_27g_thaliana_all_genes_pi_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+pi_all_contexts  <- fread("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_27g/seq_all_snps.biallelic_and_non_variable.changed_27g_thaliana_all_contexts_pi_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+# Read diversity within A.lyrata  
+pi_4fold_lyr_pi <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_thaliana_27g_lyrata_31g/thaliana_lyrata_diversity_divergence_4fold_sites_pi.txt", header=T, sep='\t')
+pi_4fold_lyr_pi <-pi_4fold_lyr_pi[pi_4fold_lyr_pi$pop=="LYR",]
+# Read divergence
+pi_4fold_lyr_dxy <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_thaliana_27g_lyrata_31g/thaliana_lyrata_diversity_divergence_4fold_sites_dxy.txt", header=T, sep='\t')
+
+## Read centromeres 
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/01_data/tair10/centr_bound.txt',header=T, sep=",")
+chromosome_lengths <- data.frame(
+  chromosome = c("Chr1", "Chr2", "Chr3", "Chr4", "Chr5"),
+  Golden_path_length = c("30427671", "19698289", "23459830", "18585056", "26975502")
+)
+# Calculate  500 KB widnows 
+calc_window <- function(data) {
+   data <- data %>%
+     mutate(
+       window_start = (window_pos_1 %/% 300000) * 300000 + 1,
+       window_end = window_start + 299999
+     )
+   return(data)  # Explicitly return the modified data
+}
+
+# Function to average pi to the windows 
+average_pi <- function(data){
+  data <-data %>% group_by(chromosome, window_start, window_end) %>% dplyr::summarise(avg_pi_window = sum((count_diffs)) / sum(count_comparisons))
+  return(data)
+}
+# Function to calculate gene density
+calc_gene_density <- function(data) {
+  data <- data %>%
+    group_by(chromosome, window_start, window_end) %>%
+    dplyr::summarise(gene_count = n())
+  return(data)
+}
+```
+## Calculate windows 
+```{r}
+# Calculate windows  
+pi_4fold_thal <- calc_window(pi_4fold_thal)
+pi_genes_thal <- calc_window(pi_genes_thal)
+pi_all_contexts <- calc_window(pi_all_contexts)
+pi_lyrata <- calc_window(pi_4fold_lyr_pi)
+divergence <- calc_window(pi_4fold_lyr_dxy)
+# Calculate gene density 
+pi_4fold_thal_gene_den <- calc_gene_density(pi_4fold_thal)
+pi_genes_thal_gene_den <- calc_gene_density(pi_genes_thal)
+pi_all_contexts_gene_den <- calc_gene_density(pi_all_contexts)
+pi_lyrata_gene_den <- calc_window(pi_lyrata)
+divergence_gene_den <- calc_window(divergence)
+# Average pi 
+pi_4fold_thal <- average_pi(pi_4fold_thal)
+pi_genes_thal <- average_pi(pi_genes_thal)
+pi_all_contexts <- average_pi(pi_all_contexts)
+pi_lyrata <- average_pi(pi_lyrata)
+divergence <- average_pi(divergence)
+```
+## Combine dataframes 
+```{r}
+# Combine dataframes based on the windows 
+pi_4fold_thal <- pi_4fold_thal %>% dplyr::select(chromosome,window_start,window_end,avg_pi_window)
+pi_genes_thal <- pi_genes_thal %>% dplyr::select(chromosome,window_start,window_end,avg_pi_window)
+pi_all_contexts <- pi_all_contexts %>% dplyr::select(chromosome,window_start,window_end,avg_pi_window)
+
+# Combine pi into one dataframe
+pi_combined <- pi_all_contexts %>%
+  full_join(pi_4fold_thal, by = c("chromosome", "window_start", "window_end"), suffix=c("_all_cont","_4_fold")) %>%
+  full_join(pi_genes_thal %>% rename_with(~paste0(.x, "_genes"), -c(chromosome, window_start, window_end)), 
+            by = c("chromosome", "window_start", "window_end")) %>%
+  full_join(pi_lyrata %>% rename_with(~paste0(.x, "_lyr"), -c(chromosome, window_start, window_end)), 
+            by = c("chromosome", "window_start", "window_end")) %>%
+  full_join(divergence %>% rename_with(~paste0(.x, "_divergence"), -c(chromosome, window_start, window_end)), 
+            by = c("chromosome", "window_start", "window_end")) 
+```
+
+# Add gene density 
+```{r}
+pi_4fold_thal_gene_den <- pi_4fold_thal_gene_den %>% dplyr::select(chromosome,window_start,window_end,gene_count)
+pi_genes_thal_gene_den <- pi_genes_thal_gene_den %>% dplyr::select(chromosome,window_start,window_end,gene_count)
+pi_all_contexts_gene_den <- pi_all_contexts_gene_den %>% dplyr::select(chromosome,window_start,window_end,gene_count)
+# Merge with gene density 
+
+all_gene_density <- pi_all_contexts_gene_den %>%
+  full_join(pi_4fold_thal_gene_den, by = c("chromosome", "window_start", "window_end"), suffix=c("_all_cont","_4_fold")) %>%
+  full_join(pi_genes_thal_gene_den, by = c("chromosome", "window_start", "window_end"),suffix=c("_tes","_genes"))
+
+# Merge with pi 
+pi_combined_with_gene_density <- inner_join(all_gene_density,pi_combined,by = c("chromosome", "window_start", "window_end"))
+```
+# Generate expected windows 
+```{r}
+generate_windows <- function(chromosome, length) {
+  tibble(
+    chromosome = chromosome,
+    window_start = seq(1, length, by = 300000),
+    window_end = (window_start + 300000 - 1))}
+# Apply this function to each chromosome to create a complete set of expected windows
+expected_windows <- chromosome_lengths %>%
+  rowwise() %>%
+  do(generate_windows(.$chromosome, .$Golden_path_length)) %>%
+  ungroup()
+
+# Impute windows which are not in the data (to have 0)
+data_full_range <- expected_windows %>%
+  full_join(pi_combined, by = c("chromosome", "window_start", "window_end")) 
+
+# Merge with centromere
+data_full_range_raw <- merge(data_full_range, centromeres, by="chromosome")
+# Make everything in centromere 0
+# Adjust pi values if window falls within the centromere range
+data_full_range_centr <- data_full_range_raw %>%
+  dplyr::mutate(
+    avg_pi_window_all_cont = ifelse(window_end >= start & window_start <= stop, "NA", avg_pi_window_all_cont),
+    avg_pi_window_4_fold   = ifelse(window_end >= start & window_start <= stop, "NA", avg_pi_window_4_fold),
+    avg_pi_window_genes    = ifelse(window_end >= start & window_start <= stop,"NA", avg_pi_window_genes),
+    avg_pi_window_lyr       = ifelse(window_end >= start & window_start <= stop, "NA", avg_pi_window_lyr),
+    avg_pi_window_divergence   = ifelse(window_end >= start & window_start <= stop, "NA", avg_pi_window_divergence)
+  )
+```
+
+```{r}
+# All colorblind-friendly
+display_carto_all(colorblind_friendly = TRUE)
+
+# Specific type
+display_carto_all(type = "qualitative", colorblind_friendly = TRUE)
+display_carto_all(type = "diverging", colorblind_friendly = TRUE)
+
+carto_pal(n = 7, name = "Safe")
+```
+
+## Create vertical facets 
+```{r}
+median_all     <- median(data_full_range_centr$avg_pi_window_all_cont, na.rm = TRUE)
+median_genes   <- median(data_full_range_centr$avg_pi_window_genes,     na.rm = TRUE)
+median_4_fold  <- median(data_full_range_centr$avg_pi_window_4_fold,    na.rm = TRUE)
+median_lyrata  <- median(data_full_range_centr$avg_pi_window_lyr,       na.rm = TRUE)
+median_dxy     <- median(data_full_range_centr$avg_pi_window_divergence,na.rm = TRUE)
+
+data_long <- data_full_range_centr %>%
+  select(chromosome, window_start, window_end, 
+         avg_pi_window_4_fold, avg_pi_window_lyr, avg_pi_window_divergence,
+         start, stop) %>%
+  pivot_longer(cols = c(avg_pi_window_4_fold, avg_pi_window_lyr, avg_pi_window_divergence),
+               names_to = "measure",
+               values_to = "value")
+
+# Create factor for measure to control order
+data_long$measure <- factor(data_long$measure,
+                            levels = c("avg_pi_window_4_fold", 
+                                      "avg_pi_window_lyr", 
+                                      "avg_pi_window_divergence"),
+                            labels = c("π (4-fold)", "A. lyrata π (4-fold)", "Dxy (4-fold)"))
+
+# Create centromere data frame (unique per chromosome)
+centromere_data <- data_full_range_raw %>%
+  select(chromosome, start, stop) %>%
+  distinct()
+
+# Create median data frame
+median_data <- data.frame(
+  measure = factor(c("π (4-fold)", "A. lyrata π (4-fold)", "Dxy (4-fold)"),
+                   levels = c("π (4-fold)", "A. lyrata π (4-fold)", "Dxy (4-fold)")),
+  median_value = c(median_4_fold, median_lyrata, median_dxy)
+)
+
+# Create the plot with colors
+p <- ggplot(data_long, aes(x = value, y = window_start/1e6, color = measure, group = measure)) +
+  geom_vline(data = median_data, aes(xintercept = median_value), 
+             linetype = "dashed", color = "black", size = 0.5) +
+  geom_smooth(method = "loess", se = TRUE, size = 0.6, alpha = 0.6, span = 0.1, fill = "gray62", orientation = "y") +
+  geom_point(size = 0.8, alpha = 0.6) + 
+  facet_grid(chromosome ~ measure, scales = "free") +
+  scale_color_manual(values = c(
+    "π (4-fold)" = "#117733",
+    "A. lyrata π (4-fold)" = "#332288",
+    "Dxy (4-fold)" = "#AA4499"
+  )) + geom_rect(data = centromere_data, 
+            aes(xmin = -Inf, xmax = Inf, ymin = start/1e6, ymax = stop/1e6),
+            fill = "gray62", alpha = 0.5, inherit.aes = FALSE) +
+  theme_void() +
+  theme(strip.text.x = element_text(size = 20, margin = margin(t = 10, b = 10)),
+        strip.text.y = element_text(size = 20, angle = 270, margin = margin(l = 10, r = 10)),
+        axis.text.x = element_text(size = 16,angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 16,angle = 90, margin = margin(r = 5)),
+        axis.title.x = element_text(size = 20, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 20, angle = 90, margin = margin(r = 15)),
+        axis.line.x = element_line(color = "black", size = 0.5),
+        axis.line.y.left = element_line(color = "black", size = 0.5),
+        panel.spacing = unit(0.5, "lines"),
+        legend.position = "none") +
+  labs(x = "Value", y = "Position (Mbp)")
+
+width_inches <- 12
+height_inches <- 15
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/chromosome_plots_colored.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(p)
+dev.off()
+```
+## Make scatterplots 
+```{r}
+
+library(ggplot2)
+library(dplyr)
+
+# Calculate distance to centromere
+data_full_range_raw <- data_full_range_raw %>%
+  mutate(
+    window_mid = (window_start + window_end) / 2,
+    centromere_mid = (start + stop) / 2,
+    dist_to_centromere = abs(window_mid - centromere_mid),
+    chr_num = as.numeric(gsub("Chr", "", chromosome))
+  ) %>%
+  arrange(chr_num, window_start)
+
+# Plot
+ggplot(data_full_range_raw, aes(x = avg_pi_window_4_fold, y = avg_pi_window_divergence)) +
+  geom_point(aes(color = dist_to_centromere/1e6), alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", se = TRUE, color = "gray62", linetype = "dashed") +
+  scale_color_viridis_c(option = "plasma", direction = -1,
+                        name = "Distance to\ncentromere (Mbp)") +
+  labs(x = "A. thaliana π (4-fold)", 
+       y = "Divergence (4-fold)") +
+  theme_void() + 
+  theme(
+    axis.text.x = element_text(size = 25, angle = 45, hjust = 1, margin = margin(t = 10)),
+    axis.text.y = element_text(size = 25, margin = margin(r = 10)),
+    strip.text = element_text(size = 25, margin = margin(b = 10)),
+    axis.title.x = element_text(size = 25, margin = margin(t = 20)),
+    axis.title.y = element_text(size = 25, angle = 90, margin = margin(r = 20)),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16),
+    legend.key.height = unit(1.5, "cm"),
+    legend.key.width = unit(0.8, "cm"),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  ) + 
+#print slope coefficient 
+  #facet_wrap(~chromosome, ncol = 5, scales = "free")
+```
+
+### Dotplot for each chromosome
+```{r}
+chr1_pos <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/001_pannagram_31_lyr_thal/out/rearragned_genomes/out/features/msa/extracted_MN47_TAIR10_chr5.tsv", header=T)
+```
+
+```{r}
+bin_size <- 10000  # Adjust based on your genome size
+library(dplyr)
+
+chr1_pos_filt <- chr1_pos %>%
+  filter(GCA_944990045.1_MN47_v2_genomic.8scaff != 0 & TAIR10 > 0)
+
+chr1_binned <- chr1_pos_filt %>%
+  mutate(
+    TAIR10_bin = floor(TAIR10 / bin_size) * bin_size,
+    MN47_bin = floor(abs(GCA_944990045.1_MN47_v2_genomic.8scaff) / bin_size) * bin_size
+  ) %>%
+  group_by(TAIR10_bin, MN47_bin) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Plot
+ggplot(chr1_binned, aes(x = MN47_bin/1e6, y = TAIR10_bin/1e6)) +
+  geom_point(size = 2, alpha = 0.8, color = "#352F44") +
+  labs(x = "TAIR10 Position (Mbp)", 
+       y = "MN47 Position (Mbp)") +
+  theme_void() +   theme(
+    axis.text.x = element_text(size = 25, angle = 45, hjust = 1, margin = margin(t = 10)),
+    axis.text.y = element_text(size = 25, margin = margin(r = 10)),
+    strip.text = element_text(size = 25, margin = margin(b = 10)),
+    axis.title.x = element_text(size = 25, margin = margin(t = 20)),
+    axis.title.y = element_text(size = 25, angle = 90, margin = margin(r = 20)),
+  )+
+  theme(panel.grid = element_blank(),
+        axis.line = element_line(color = "black"))
+
+```
+
+###OLD
+### Create in separate facets 
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+## Calculate median 
+median_all     <- median(data_full_range$avg_pi_window_all_cont, na.rm = TRUE)
+median_genes   <- median(data_full_range$avg_pi_window_genes,     na.rm = TRUE)
+median_4_fold  <- median(data_full_range$avg_pi_window_4_fold,    na.rm = TRUE)
+median_lyrata  <- median(data_full_range$avg_pi_window_lyr,       na.rm = TRUE)
+median_dxy     <- median(data_full_range$avg_pi_window_divergence,na.rm = TRUE)
+# Reshape to long format
+pi_long <- data_full_range %>%
+  pivot_longer(
+    cols = c(avg_pi_window_all_cont,
+             avg_pi_window_4_fold,
+             avg_pi_window_genes,
+             avg_pi_window_lyr,
+             avg_pi_window_divergence),
+    names_to  = "metric",
+    values_to = "value"
+  ) %>%
+  mutate(
+    metric = case_when(
+      metric == "avg_pi_window_all_cont"       ~ "π (genes+TEs)",
+      metric == "avg_pi_window_genes"          ~ "π (genes)",
+      metric == "avg_pi_window_4_fold"         ~ "π (4 fold sites)",
+      metric == "avg_pi_window_lyr"            ~ "A. lyrata π (4 fold sites)",
+      metric == "avg_pi_window_divergence"     ~ "Dxy (4 fold sites)"
+    ),
+    median_value = case_when(
+      metric == "π (genes+TEs)"        ~ median_all,
+      metric == "π (genes)"            ~ median_genes,
+      metric == "π (4 fold sites)"     ~ median_4_fold,
+      metric == "A. lyrata π (4 fold sites)"       ~ median_lyrata,
+      metric == "Dxy (4 fold sites)"  ~ median_dxy
+    )
+  )
+```
+
+```{r}
+# Plot: y = value (numeric), not y = metric
+
+# Set the order you want
+pi_long <- pi_long %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c(
+        "π (genes+TEs)",
+        "π (genes)",
+        "π (4 fold sites)",
+        "A. lyrata π (4 fold sites)",
+        "Dxy (4 fold sites)"
+      )
+    )
+  )
+
+pi_long_chr1 <- pi_long[pi_long$chromosome=="Chr1",]
+plot1 <- ggplot(pi_long_chr1, aes(window_start, value, color = metric)) +
+  geom_smooth(method = "loess", se = TRUE, size = 1, alpha = 0.6, span = 0.3, fill = "#C9CDCF") +
+  geom_point(data = subset(pi_long_chr1, value != 0), size = 1.3, alpha = 0.9) +
+  geom_hline(aes(yintercept = median_value),
+             color = "darkgrey", linetype = "dashed", linewidth = 0.6, alpha = 0.9) +
+  facet_wrap(metric ~ chromosome, scales = "free") +
+  scale_color_manual(values = c(
+    "π (genes+TEs)" = "#6A1E55",
+    "π (genes)"     = "#D1A980",
+    "π (4 fold sites)" = "#4A9782",
+    "A. lyrata π (4 fold sites)"   = "#5C5470",
+    "Dxy (4 fold sites)" = "#211C84"
+  )) +
+  theme_bw(base_size = 16) +
+  theme(panel.spacing.x = unit(0, "lines"),
+        panel.spacing.y = unit(0, "lines"),
+        legend.position = "none") +
+  xlab("Window Start (Mbp)") +
+  ylab("Value") +
+  scale_x_continuous(labels = scales::label_number(scale = 1e-6))
+plot1
+
+width_inches <- 12
+height_inches <- 8
+#dpi <- 600
+#CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/only_diversity_all_context_figure1_patterns_separately.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+#print(plot1)
+dev.off()
+```
+## Add 
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+#data_full_range_filtered <-data_full_range[data_full_range$avg_pi_window_divergence>0 & data_full_range$avg_pi_window_all_cont>0,]
+
+library(ggplot2)
+library(dplyr)
+
+# Calculate correlations for each chromosome
+data_full_range_filtered_chr1 <-data_full_range_filtered[data_full_range_filtered$chromosome=="Chr1",]
+correlations <- data_full_range_filtered_chr1 %>%
+  group_by(chromosome) %>%
+  dplyr::summarise(
+    correlation = cor(avg_pi_window_divergence, avg_pi_window_all_cont, use = "complete.obs"),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    cor_label = paste0("r = ", round(correlation, 3)),
+    # Position labels in upper left of each facet
+    x_pos = -Inf,
+    y_pos = Inf
+  )
+
+# Create the plot
+# Create the plot
+ggplot(data_full_range_filtered_chr1, aes(x = avg_pi_window_divergence, y = avg_pi_window_all_cont)) +
+  geom_point(aes(fill = avg_pi_window_divergence), 
+             alpha = 0.7, 
+             size = 4, 
+             shape = 21,          # This is the ggplot2 equivalent of pch=21
+             color = "black") +   # Border color
+  scale_fill_viridis_c(name = "Dxy") +  # Use scale_fill since we're using fill aesthetic
+  geom_text(data = correlations, 
+            aes(x = x_pos, y = y_pos, label = cor_label),
+            hjust = -0.1, vjust = 1.2, 
+            size = 8, color = "black", fontface = "plain") +
+  theme_bw() +
+  facet_wrap(~chromosome, ncol = 5) +
+  labs(
+    x = "Dxy",
+    y = "π (genes+TEs)"
+  )+theme_bw(base_size = 20)
+
+# To make it even wider, you can also adjust the figure size when saving:
+# ggsave("plot.png", width = 15, height = 10, dpi = 300)
+
+```
+
+
+## Save diversity table 
+```{r}
+write.table(pi_long,"/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_27g/diversity_genes_all_cont_and_4fold_sites.csv", quote = F, row.names = F, sep="\t")
+```
+
+
+
+
+
+
+
+
+# Plot diversity in all contexts 
+```{r}
+plot1 <- ggplot(data_full_range_centr, aes(x = window_start)) +
+  geom_line(aes(y = avg_pi_window_all_cont), size = 3, alpha = 0.4, colour = "#643A6B") + 
+  geom_line(aes(y = avg_pi_window_4_fold), size = 1, alpha = 0.9, colour = "#78A083") + 
+  geom_line(aes(y = avg_pi_window_genes), size = 1, alpha = 0.8, colour = "#ED7D31") +
+  facet_wrap(~chromosome, ncol = 5, scales = "free_x") +
+  geom_rect(
+    data = data_full_range_centr,
+    aes(
+      xmin = start - 120000, xmax = stop + 120000,
+      ymin = -Inf, ymax = Inf
+    ), fill = "lightgrey", alpha = 0.1, inherit.aes = FALSE
+  ) +
+  geom_hline(aes(yintercept = median(avg_pi_window_all_cont, na.rm = TRUE)), 
+             linetype = "dashed", colour = "black") + 
+  theme_classic() +
+  theme(
+    panel.border = element_blank(), 
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    strip.text.x = element_text(size = 10, face = "bold"),
+    strip.text.y = element_blank(),
+    legend.position = "none"
+  ) +
+  xlab("Window Start (Mbp)")+scale_x_continuous(labels = label_number(scale = 1e-6))
+
+
+#width_inches <- 20
+#height_inches <- 5
+#dpi <- 600
+#CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/only_diversity_all_context_figure1_edited.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(plot1)
+dev.off()
+```
+
+
+
+```{r}
+pi_combined_clean <- pi_combined %>% 
+  select(avg_pi_window_all_cont, avg_pi_window_genes, avg_pi_window_4_fold) %>% 
+  drop_na()
+
+median_all <- median(pi_combined_clean$avg_pi_window_all_cont, na.rm = TRUE)
+median_genes <- median(pi_combined_clean$avg_pi_window_genes, na.rm = TRUE) 
+median_4_fold <- median(pi_combined_clean$avg_pi_window_4_fold, na.rm = TRUE)
+
+# Create your long data
+pi_long_filtered <- pi_combined %>%
+  pivot_longer(
+    cols = c(avg_pi_window_all_cont, avg_pi_window_4_fold, avg_pi_window_genes),
+    names_to = "metric",
+    values_to = "Diversity (π)"
+  ) %>%
+  mutate(
+    metric = case_when(
+      metric == "avg_pi_window_all_cont" ~ "All contexts",
+      metric == "avg_pi_window_genes" ~ "Genes",
+      metric == "avg_pi_window_4_fold" ~ "4-fold sites"
+    ),
+    median_value = case_when(
+      metric == "All contexts" ~ median_all,
+      metric == "Genes" ~ median_genes,
+      metric == "4-fold sites" ~ median_4_fold
+    )
+  )
+
+# Plot
+pi_long <- pi_long_filtered %>%
+  mutate(
+    metric = factor(metric, levels = c("All contexts", "Genes", "4-fold sites"))
+  )
+
+pi_long_filtered <-pi_long_filtered[pi_long_filtered$`Diversity (π)`<0.03,]
+pi_long_filtered <- left_join(pi_long_filtered, centromeres, by="chromosome")
+plot1 <- ggplot(pi_long, aes(x = window_start, y = `Diversity (π)`, color = metric)) +
+  geom_point(size = 1.3, alpha = 0.9) +
+  geom_smooth(method = "loess", se = FALSE, size = 1.4, alpha = 0.8, span = 0.3,fill = "grey50") +
+  geom_hline(aes(yintercept = median_value, color = "darkgrey"), 
+             linetype = "dashed", size = 0.6, alpha = 0.9)+
+  facet_grid(metric ~ chromosome, scales = "free") +
+  scale_color_manual(values = c(
+    "All contexts" = "#004030",
+    "4-fold sites" = "#D1A980", 
+    "Genes" = "#4A9782"
+  )) +
+ # geom_rect(
+#    data = data_full_range ,
+#    aes(xmin = start - 150000, xmax = stop + 150000, ymin = -Inf, ymax = Inf), 
+#    fill = "lightgrey", alpha = 0.3, inherit.aes = FALSE
+#  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.spacing.x = unit(0, "lines"), 
+    panel.spacing.y = unit(0, "lines"),
+    legend.position = "none"
+  ) +
+  xlab("Window Start (Mbp)") +
+  scale_x_continuous(labels = label_number(scale = 1e-6))
+
+width_inches <- 12
+height_inches <- 8
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/only_diversity_all_context_figure1_patterns_separately.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(plot1)
+dev.off()
+```
+
+
+
+```{r}
+pi_long_filtered <- na.omit(pi_long_filtered)
+# Create a dataset that labels each window as left arm, centromere, or right arm
+pi_filtered_arms <- pi_long_filtered %>%
+  mutate(arm = case_when(
+    window_end < start ~ "left",
+    window_start > stop ~ "right",
+    TRUE ~ "centromere"
+  )) %>%
+  filter(arm != "centromere")
+
+ggplot(pi_long_filtered, aes(x = window_start/1e6, y = `Diversity (π)`, color = metric)) +
+  geom_point(size = 1.3, alpha = 0.9) +
+  # Add vertical stripes for centromeres
+  geom_rect(
+    data = pi_long_filtered %>% distinct(chromosome, start, stop),
+    aes(xmin = (start-100000)/1e6, xmax = (stop+200000)/1e6, ymin = -Inf, ymax = Inf), 
+    fill = "lightgrey", alpha = 0.3, inherit.aes = FALSE
+  ) +
+  # Break geom_smooth at centromeres by creating separate smooths for each arm
+  geom_smooth(
+    data = pi_filtered_arms %>% mutate(window_start_mbp = window_start/1e6),
+    aes(x = window_start_mbp, group = interaction(metric, chromosome, arm)),
+    method = "loess", se = FALSE, size = 1.4, alpha = 0.8, span = 0.3
+  ) +
+  geom_hline(aes(yintercept = median_value, color = "darkgrey"), 
+             linetype = "dashed", size = 0.6, alpha = 0.9) +
+  facet_grid(metric ~ chromosome, scales = "free") +
+  scale_color_manual(values = c(
+    "All contexts" = "#004030",
+    "4-fold sites" = "#D1A980", 
+    "Genes" = "#4A9782"
+  )) +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.spacing.x = unit(0, "lines"), 
+    panel.spacing.y = unit(0, "lines"),
+    legend.position = "none"
+  ) +
+  xlab("Window Start (Mbp)")
+
+
+
+
+pi_long_filtered %>% filter(chromosome=="Chr1") %>% ggplot(pi_long_filtered, aes(x = window_start/1e6, y = `Diversity (π)`, color = metric, fill = metric)) +
+  geom_point(size = 1.3, alpha = 0.9) +
+  # Add vertical stripes for centromeres
+  geom_rect(
+    data = pi_long_filtered %>% distinct(chromosome, start, stop),
+    aes(xmin = (start-100000)/1e6, xmax = (stop+200000)/1e6, ymin = -Inf, ymax = Inf), 
+    fill = "lightgrey", alpha = 0.3, inherit.aes = FALSE
+  ) +
+  # Add ribbon for area above median
+  geom_ribbon(
+    data = pi_filtered_arms %>% mutate(window_start_mbp = window_start/1e6),
+    aes(x = window_start_mbp, 
+        ymin = median_value, 
+        ymax = pmax(`Diversity (π)`, median_value),
+        group = interaction(metric, chromosome, arm)),
+    alpha = 0.2, color = NA
+  ) +
+  # Break geom_smooth at centromeres by creating separate smooths for each arm
+  geom_smooth(
+    data = pi_filtered_arms %>% mutate(window_start_mbp = window_start/1e6),
+    aes(x = window_start_mbp, group = interaction(metric, chromosome, arm)),
+    method = "loess", se = FALSE, size = 1.4, alpha = 0.8, span = 0.3
+  ) +
+  geom_hline(aes(yintercept = median_value, color = "darkgrey"), 
+             linetype = "dashed", size = 0.6, alpha = 0.9) +
+  facet_grid(metric ~ chromosome, scales = "free") +
+  scale_color_manual(values = c(
+    "All contexts" = "#004030",
+    "4-fold sites" = "#D1A980", 
+    "Genes" = "#4A9782"
+  )) +
+  scale_fill_manual(values = c(
+    "All contexts" = "#004030",
+    "4-fold sites" = "#D1A980", 
+    "Genes" = "#4A9782"
+  )) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.spacing.x = unit(0, "lines"), 
+    panel.spacing.y = unit(0, "lines"),
+    legend.position = "none"
+  ) +
+  xlab("Window Start (Mbp)")
+```
+
+
+```{r}
+pi_long_filtered <- pi_long %>%
+  ungroup() %>%
+  left_join(data_full_range, by = "chromosome")
+
+
+pi_long_filtered <- pi_long_filtered %>%
+  mutate(`Diversity (π)` = ifelse(window_start.x >= (start - 1000) & 
+                                  window_start.x <= (stop + 1000), 
+                                  0, `Diversity (π)`)) %>%
+  select(-contains(".y"), -start, -stop, -gene_count_all_cont, -gene_count_4_fold, 
+         -gene_count, -avg_pi_window_all_cont, -avg_pi_window_4_fold, -avg_pi_window,
+         -ancestral_start, -ancestral_stop) %>%
+  rename(window_start = window_start.x, window_end = window_end.x)
+```
+
+
+## Add divergence
+
+```{r}
+pi_combined_with_divergence <- left_join(pi_long_filtered,divergence,by=c("chromosome","window_start", "window_end"))
+```
+## Plot diversity and divergence
+```{r}
+# Compute scaling factor
+scale_factor <- mean((na.omit(pi_combined_with_divergence$avg_pi_window_4_fold)) / (na.omit(pi_combined_with_divergence$avg_pi_window)))
+
+ggplot(pi_combined_with_divergence, aes(x = window_start)) +
+  # Primary Y-axis line (4-fold sites)
+  geom_line(aes(y = avg_pi_window_4_fold, colour = "4-fold ortholgous genes diversity"), size = 1, alpha = 0.6) + 
+  # Secondary Y-axis line (All Sites, scaled)
+  geom_line(aes(y = avg_pi_window/11, colour = "Divergence"), size = 1, alpha = 0.9) + 
+  facet_wrap(~chromosome, ncol = 5, scales = "free_x") +
+  
+  # Add gray highlight regions
+  geom_rect(
+    data = long_data,
+    aes(
+      xmin = start - 120000, xmax = stop + 120000,
+      ymin = -Inf, ymax = Inf
+    ), fill = "lightgrey", alpha = 0.1, inherit.aes = FALSE
+  ) +
+  
+  # Add median line
+  geom_hline(aes(yintercept = median(avg_pi_window_4_fold, na.rm = TRUE)), 
+             linetype = "dashed", colour = "black") + 
+  
+  # Define primary and secondary y-axes
+  scale_y_continuous(
+    name = "Avg π (4-fold sites)", 
+    sec.axis = sec_axis(~ . / scale_factor, name = "Avg π (All Sites)")
+  ) +
+  
+  # Set colors for the lines
+  scale_colour_manual(
+    name = "Legend",
+    values = c("Divergence" = "#643A6B", "4-fold ortholgous genes diversity" = "#78A083")
+  ) +
+  
+  # Theme adjustments
+  theme_classic() +
+  theme(
+    panel.border = element_blank(), 
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    strip.text.x = element_text(size = 10, face = "bold"),
+    strip.text.y = element_blank(),
+    legend.position = "top"
+  ) +
+  
+  # X-axis formatting
+  xlab("Window Start (Mbp)") +
+  scale_x_continuous(labels = scales::label_number(scale = 1e-6))
+
+
+
+
+
+```
+## Scatterplot diversity divergence 
+```{r}
+# Create dataset with centromere proximity
+pi_scatter <- pi_combined_with_divergence %>%
+  filter(metric == "4-fold sites") %>%
+  mutate(
+    # Calculate distance to centromere (negative = before, positive = after)
+    dist_to_centromere = case_when(
+      window_end < start ~ start - window_end,  # left arm
+      window_start > stop ~ window_start - stop,  # right arm
+      TRUE ~ 0  # inside centromere
+    ),
+    # Use absolute distance for coloring
+    abs_dist_to_centromere = abs(dist_to_centromere)
+  )
+
+ggplot(pi_scatter, aes(x = `Diversity (π)`, y = avg_pi_window_divergence, 
+                       color = abs_dist_to_centromere)) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_color_viridis_c(
+    option = "plasma",
+    direction = -1,
+    name = "Distance to\ncentromere (bp)",
+    labels = scales::comma
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right"
+  ) +
+  xlab("Diversity (π) - 4-fold sites") +
+  ylab("Divergence") +
+  labs(title = "Diversity vs Divergence by Centromere Proximity")
+```
+
+# Read Divergence and recombination rate 
+```{r}
+pi_4fold_lyr_dxy <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/dxy_27_thal_3lyr/27thal_3lyr_pacbio_dxy.txt", header=T, sep='\t')
+pi_4fold_lyr_dxy <-pi_4fold_lyr_dxy[pi_4fold_lyr_dxy$pop1=="POP1" & pi_4fold_lyr_dxy$pop2=="LYR",]
+pi_4fold_lyr_dxy <- calc_window(pi_4fold_lyr_dxy)
+
+pi_4fold_lyr_dxy <- pi_4fold_lyr_dxy %>% group_by(chromosome, window_start, window_end) %>% dplyr::summarise(avg_dxy_window = sum((count_diffs)) / sum(count_comparisons))
+
+historical_recombination_chr1 <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/historical_recombination/chr1_ldhat_output_with_loci_adjusted_windows_500kb.csv", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+historical_recombination_chr2 <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/historical_recombination/chr2_ldhat_output_with_loci_adjusted_windows_500kb.csv", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+historical_recombination_chr3 <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/historical_recombination/chr3_ldhat_output_with_loci_adjusted_windows_500kb.csv", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+historical_recombination_chr4 <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/historical_recombination/chr4_ldhat_output_with_loci_adjusted_windows_500kb.csv", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+historical_recombination_chr5 <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/historical_recombination/chr5_ldhat_output_with_loci_adjusted_windows_500kb.csv", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+
+historical_recombination <- rbind(historical_recombination_chr1,historical_recombination_chr2,historical_recombination_chr3,historical_recombination_chr4,historical_recombination_chr5)
+```
+## Join historical recombination, dxy and pi 
+```{r}
+historical_recombination_dxy <- inner_join(pi_4fold_lyr_dxy,historical_recombination, by=c("chromosome"="chromosome","window_start"="Start", "window_end"="End"))
+# Join with pi in all context 
+historical_recombination_dxy_pi <- inner_join(data_full_range,historical_recombination_dxy, by=c("chromosome","window_start","window_end"))
+```
+# Impute 0 on the places of centromere to the dxy and rho 
+```{r}
+# Make everything in centromere 0
+# Adjust pi values if window falls within the centromere range
+historical_recombination_dxy_pi <- historical_recombination_dxy_pi %>% dplyr::mutate(avg_dxy_window = ifelse(window_end >= start & window_start <= stop, 0, avg_dxy_window))
+historical_recombination_dxy_pi <- historical_recombination_dxy_pi %>% dplyr::mutate(Mean_rho_mean = ifelse(window_end >= start & window_start <= stop, 0, Mean_rho_mean))
+```
+
+```{r}
+
+long_data <- historical_recombination_dxy_pi %>%
+  pivot_longer(
+    cols = c(avg_pi_window_all_cont, avg_dxy_window, Mean_rho_mean, gene_count_genes),
+    names_to = "estimate",
+    values_to = "value"
+  )
+
+long_data$estimate <- factor(long_data$estimate, levels = c(
+  "avg_pi_window_all_cont", "avg_dxy_window", "Mean_rho_mean", "gene_count_genes"
+))
+
+# Create the plot
+custom_colors <- c(
+  "avg_pi_window_all_cont" = "#643A6B",
+  "avg_dxy_window" = "#78A083",
+  "Mean_rho_mean" = "#ED7D31",
+  "gene_count_genes" = "#2B78E4"
+)
+
+# Plot with custom colors
+
+plot1 <- ggplot(long_data, aes(x = window_start, y = value, colour = estimate)) +
+  geom_rect(
+    data = long_data,
+    aes(
+      xmin = start - 100000, xmax = stop + 100000,
+      ymin = -Inf, ymax = Inf, inherit.aes = FALSE # Full height of the plot
+    ),
+    fill = "lightgrey", alpha = 0.1, inherit.aes = FALSE # Prevent the stripe from inheriting main plot aesthetics
+  ) +
+  geom_line(size = 1, alpha = 0.8) +
+  facet_grid(estimate ~ chromosome, scales = "free_y") +
+  scale_color_manual(values = custom_colors) +
+  scale_x_continuous(labels = scales::unit_format(unit = "M", scale = 1e-6)) +
+  labs(
+    x = "Window Start",
+    y = "Values"
+  ) +
+   theme_half_open() + theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  theme(
+    strip.text.x = element_text(size = 10, face = "bold"),
+    strip.text.y = element_blank(),
+    legend.position = "none")
+    #panel.spacing = unit(0, 'lines'))+ theme(panel.spacing.x=unit(1, "lines"))
+ 
+
+width_inches <- 15
+height_inches <- 10
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/diversity_rho_divergence_gene_density_figure1_edited.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(plot1)
+dev.off()
+   
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# old code
+```{r}
+minimal_theme_settings <- ggplot2::theme_minimal(base_size = 14)
+custom_theme <- theme(
+  plot.background = element_blank(), 
+  strip.text = element_text(size = 14, color = "gray30"),
+  panel.background = element_blank(),
+  panel.border = element_blank(), # Ensure no frame
+  panel.grid = element_blank(),
+  axis.title.x = element_text(color = "gray30", size = 14), # Set x-axis title color and size
+  axis.title.y = element_text(color = "gray30", size = 14), # Set y-axis title color and size
+  axis.ticks.x = element_blank(),
+  axis.line = element_line(color = "gray30"), # Add this line to show x and y axis lines
+  strip.background = element_blank(),
+   axis.text.x = element_text(color = "gray30", size = 14), # Adjust x-axis text size and color
+    axis.text.y = element_text(color = "gray30", size = 8),
+  strip.text.x = element_text(color = "gray30",size = 14), # Control color of facet wrap titles
+  legend.text = element_text(color = "gray30",size = 14) # Set legend text color
+)
+max_chrom_length <- max(data_full_range$window_start, na.rm = TRUE)
+mean_avg_pi_4deg <- mean(data_full_range$avg_pi_4_fold_window, na.rm = TRUE)
+#Calculate sd
+
+
+data_full_range <- data_full_range %>%
+  group_by(chromosome) %>%
+  mutate(sd = sd(avg_pi_4_fold_window, na.rm = TRUE)) %>%
+  ungroup() 
+
+chrom1_data <- data_full_range %>% filter(chromosome == "Chr1")
+
+final_plot <- ggplot(data_full_range, aes(x = window_start, y = avg_pi_4_fold_window)) +
+  geom_rect(data = data_full_range, aes(xmin = start-500000 , xmax = stop+500000, ymin = -Inf, ymax = Inf), fill = "#DDDDDD", alpha = 0.03) +
+ # geom_rect(aes(xmin = ifelse(start - 1000000 < 1, 1, start ), xmax = stop , ymin = -Inf, ymax = Inf), fill = "#DDDDDD", alpha = 0.03) +
+  #geom_vline(data = chrom1_data, aes(xintercept = ancestral_stop), color = "gray30", linetype = "solid", size = 0.8, alpha = 0.3) +
+  geom_ribbon(aes(ymin = avg_pi_4_fold_window - sd, ymax = ifelse(avg_pi_4_fold_window > mean_avg_pi_4deg, avg_pi_4_fold_window + sd, avg_pi_4_fold_window - sd)), fill = "#527853", alpha = 0.5) +
+  #geom_vline(aes(xintercept = ifelse(start - 1000000 < 1, 1, start )), color = "gray30", linetype = "solid", size = 0.4, alpha = 0.3) +
+  #geom_vline(aes(xintercept = stop ), color = "gray30", linetype = "solid", size = 0.8, alpha = 0.3) +
+  #geom_point(size = 2, alpha = 0.7, colour = "#527853") +
+  geom_line(size = 1, alpha = 0.7, colour = "#527853") +
+  geom_hline(aes(yintercept = mean_avg_pi_4deg), color = "#527853", linetype = "longdash", size = 0.5, alpha = 0.8) +
+  scale_x_continuous(labels = scales::unit_format(unit = "M", scale = 1e-6), expand = c(0.05, 0)) +
+  custom_theme + ylab("π") + xlab("Mbp") + facet_wrap(~chromosome, nrow = 5, scales="free")
+
+# Second geom_rect specifically for chromosome 1. Filter data outside of aes().
+
+width_inches <- 8
+height_inches <- 10
+dpi <- 800
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/diversity_27_genomes_only_4_fold_with_ancestral_centr_for_poster_1Mb_centr.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(final_plot)
+dev.off()
+
+```
+## Add rho
+```{r}
+```
+
+
+# Create a boxplots
+```{r}
+data_full_range <- data_full_range %>%
+  mutate(
+    region = ifelse(window_start <= (start - 4000000) | window_start >= (stop + 4000000), "A", "P")
+  )
+
+my_colors <- c("P" = "gray30", "A" = "#527853")
+# Group results per chromosome
+results <- data_full_range %>% 
+  dplyr::group_by(chromosome) %>%  do(tidy(wilcox.test(avg_pi_4_fold_window ~ region, data = .)))
+
+# Adjust the p-values using BH correction
+results$p.adj <- p.adjust(results$p.value, method = "fdr")
+#Combine pvalue and start labels 
+
+results <- results %>%
+  mutate(signif_level = case_when(
+    p.adj < 0.001 ~ '***',
+    p.adj < 0.01  ~ '**',
+    p.adj < 0.05  ~ '*',
+    p.adj < 0.1   ~ '.',
+    TRUE          ~ 'NS'  # NS indicates not significant
+  ),
+  label = paste("p.adj=", p.adj, " ", signif_level))
+
+
+
+# Convert the adjusted p-values to scientific notation
+options(digits=2)
+results$p.adj.scientific <- format(results$p.adj, scientific = TRUE)
+
+
+ymax <- max(data_full_range$avg_pi_4_fold_window)  # Get the max value to position labels 
+
+boxplots <-ggboxplot(data_full_range, x = "region", y = "avg_pi_4_fold_window",
+                  fill = "region", alpha = 0.6, color="region",notch=T,notchwidth = 0.8) + 
+  geom_jitter(aes(col=region), size=2, show.legend = F,alpha = 0.6) +
+   facet_wrap(~chromosome, ncol=5)+
+  ylab("π") +
+  xlab('region') + 
+  scale_fill_manual(values = my_colors) +
+  scale_color_manual(values = my_colors) +
+  scale_y_continuous(limits = c(0, 0.03)) +
+  rotate_x_text(12) +
+  theme(strip.text.x = element_text(size = 70)) +  # Adjust this value for desired size
+  geom_text(data = results, aes(x = 1.5, y = 0.03, label = paste(signif_level)), size=8,col = "gray30") +  # Adjust the size value here for desired label size
+  theme_minimal(base_size = 15) + 
+  custom_theme +theme(legend.position="none")
+
+
+print(boxplots)
+width_inches <- 8
+height_inches <- 6 
+dpi <- 600
+CairoPNG("eboxplots_diversity_27_thaliana_wo_ancestral_chr.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(boxplots)
+dev.off()
+```
+# Boxplots including ancestral centromere 
+```{r}
+# Include ancestral stop for chromosome
+data_full_range <- data_full_range %>%
+  mutate(
+    region = case_when(
+      chromosome == "Chr1" & (window_start <= (start - 4000000) | window_start >= (ancestral_stop)) ~ "A",
+      chromosome == "Chr1" & !(window_start <= (start - 4000000) | window_start >= (ancestral_stop)) ~ "P",
+      chromosome != "Chr1" & (window_start <= (start - 4000000) | window_start >= (stop + 4000000)) ~ "A",
+      chromosome != "Chr1" & !(window_start <= (start - 4000000) | window_start >= (stop + 4000000)) ~ "P"
+    )
+  )
+
+my_colors <- c("P" = "gray30", "A" = "#527853")
+# Group results per chromosome
+results <- data_full_range %>% 
+  dplyr::group_by(chromosome) %>%  do(tidy(wilcox.test(avg_pi_4_fold_window ~ region, data = .)))
+
+# Adjust the p-values using BH correction
+results$p.adj <- p.adjust(results$p.value, method = "fdr")
+#Combine pvalue and start labels 
+
+results <- results %>%
+  mutate(signif_level = case_when(
+    p.adj < 0.001 ~ '***',
+    p.adj < 0.01  ~ '**',
+    p.adj < 0.05  ~ '*',
+    p.adj < 0.1   ~ 'NS',
+    TRUE          ~ 'NS'  # NS indicates not significant
+  ),
+  label = paste("p.adj=", p.adj, " ", signif_level))
+
+
+
+# Convert the adjusted p-values to scientific notation
+options(digits=2)
+results$p.adj.scientific <- format(results$p.adj, scientific = TRUE)
+
+
+ymax <- max(data_full_range$avg_pi_4_fold_window)  # Get the max value to position labels 
+
+boxplots <-ggboxplot(data_full_range, x = "region", y = "avg_pi_4_fold_window",
+                  fill = "region", alpha = 0.6, color="region",notch=T,notchwidth = 0.8) + 
+  geom_jitter(aes(col=region), size=2, show.legend = F,alpha = 0.6) +
+   facet_wrap(~chromosome, ncol=5)+
+  ylab("π") +
+  xlab('region') + 
+  scale_fill_manual(values = my_colors) +
+  scale_color_manual(values = my_colors) +
+  scale_y_continuous(limits = c(0, 0.03)) +
+  rotate_x_text(12) +
+  theme(strip.text.x = element_text(size = 70)) +  # Adjust this value for desired size
+  geom_text(data = results, aes(x = 1.5, y = 0.03, label = paste(signif_level)), size=6,col = "gray30") +  # Adjust the size value here for desired label size
+  theme_minimal(base_size = 15) + 
+  custom_theme +theme(legend.position="none")
+
+
+print(boxplots)
+width_inches <- 8
+height_inches <- 6 
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/01_figures/boxplots_diversity_27_thaliana_with_ancestral_chr.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(boxplots)
+dev.off()
+```
+
+## Additional code
+# Generate plot Pi in 27 thaliana genomes with gene density
+```{r}
+
+
+ggplot(data_full_range, aes(x = window_start, y = gene_count)) +
+    geom_col(fill="#776B5D",alpha=0.5) +
+    scale_y_continuous(breaks=c(1, max_gene_count), limits=c(0, max_gene_count * 1.2)) +
+    xlab(NULL) + ylab(NULL) +
+    theme_minimal(base_size = 15) + custom_theme
+
+#Extract theme minimal text
+minimal_theme_settings <- ggplot2::theme_minimal(base_size = 15)$text
+custom_theme <- theme(
+  plot.background = element_blank(), 
+  panel.background = element_blank(),
+  panel.border = element_blank(), # Ensure no frame
+  panel.grid = element_blank(),
+  axis.title.x = element_blank(), 
+  axis.ticks.x = element_blank(),
+  axis.line = element_line(color = "gray30"), # Add this line to show x and y axis lines
+  plot.margin = margin(0, 5, 0, 5),
+  strip.background = element_blank(),
+  strip.text.x = minimal_theme_settings
+)
+
+
+max_chrom_length <- max(data_full_range$window_start, na.rm = TRUE)
+# Change NA to 0 
+max_gene_count <- max(data_full_range$gene_count)
+data_full_range <- lapply(data_full_range, function(x) replace(x, is.na(x), 0))
+data_full_range <- as.data.frame(data_full_range)
+#Calculate sd
+data_full_range <- data_full_range %>%
+  group_by(chromosome) %>%
+  mutate(sd = sd(avg_pi_4_fold_window, na.rm = TRUE)) %>%
+  ungroup() 
+
+# Generate plot 
+generate_chromosome_plots <- function(chr, show_legend=FALSE) {
+  data_subset <- subset(data_full_range, chromosome == chr)
+  data_subset$gene_count <- ifelse(is.na(data_subset$gene_count), 0, data_subset$gene_count)
+  # Calculate means
+  mean_avg_pi_4deg <- mean(data_full_range$avg_pi_4_fold_window, na.rm = TRUE)
+  mean_avg_pi_0deg <- mean(data_full_range$avg_pi_0_fold_window, na.rm = TRUE)
+  pi_plot <- ggplot(data_subset, aes(x = window_start, y = avg_pi_4_fold_window)) +
+    geom_ribbon(aes(ymin = avg_pi_4_fold_window-sd, ymax = ifelse(avg_pi_4_fold_window > mean_avg_pi_4deg, avg_pi_4_fold_window+sd, avg_pi_4_fold_window-sd)), fill = "gray30", alpha = 0.5) +
+    geom_vline(aes(xintercept = start-4000000), color = "gray30", linetype = "dashed", size=0.8) +
+    #geom_vline(aes(xintercept = ancestral_start-4000000), color = "gray30", linetype = "dashed", size=0.8) +
+     geom_vline(aes(xintercept = ancestral_stop), color = "gray30", linetype = "dashed", size=0.8) +
+    geom_vline(aes(xintercept = stop+4000000), color = "gray30", linetype = "dashed", size=0.8) +
+    geom_line(aes(y=avg_pi_4_fold_window), size=0.8,alpha=0.7, colour="#4B527E") +
+    geom_hline(aes(yintercept = mean_avg_pi_4deg), color = "#4B527E", linetype = "dashed") +
+
+    scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6), expand = c(0.05,0), limits = c(0, max_chrom_length)) +
+    theme_minimal(base_size = 12) + custom_theme + xlab(NULL)+ylab(NULL) +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), panel.border = element_blank(),
+          plot.margin = margin(0, 5, 0, 8))
+  bar_plot <- ggplot(data_subset, aes(x = window_start, y = gene_count)) +
+    geom_col(fill="#776B5D",alpha=0.5) +
+    scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6), expand = c(0.05,0), limits = c(0, max_chrom_length))+
+    scale_y_continuous(breaks=c(1, max_gene_count), limits=c(0, max_gene_count * 1.2)) +
+    xlab(NULL) + ylab(NULL) +
+    theme_minimal(base_size = 15) + custom_theme +
+    theme(axis.title.x=element_blank(), panel.border = element_blank(), plot.margin = margin(1, 0, 0, 0))
+
+  if (!show_legend) {
+    bar_plot <- bar_plot + theme(legend.position = "none")
+  }
+
+  combined <- pi_plot / bar_plot
+  return(combined + plot_layout(heights = c(7.5, 3.5)))
+}
+
+chromosomes <- unique(data_full_range$chromosome)
+
+combined_plots <- lapply(chromosomes, function(chr) {
+  show_legend <- chr == tail(chromosomes, n=1)
+  generate_chromosome_plots(chr)
+})
+
+for(i in 1:length(combined_plots)) {
+  combined_plots[[i]] <- combined_plots[[i]] + 
+    theme(axis.title.y = element_blank(),
+          axis.title.x = element_blank())
+}
+
+final_plot <- wrap_plots(combined_plots, ncol = 1) + theme_minimal() + custom_theme
+
+grid.text("π", x = unit(0.01, "npc"), y = unit(0.5, "npc"), just = "center", rot = 90, gp = gpar(fontsize = 15, col = "gray30"))
+grid.text("Mbp", x = unit(0.5, "npc"), y = unit(0.01, "npc"), just = "center", gp = gpar(fontsize = 15, col = "gray30"))
+
+# Save the figure 
+
+width_inches <- 8
+height_inches <- 10
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/01_figures/diversity_27_genomes_only_4_fold_with_ancestral_centr.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+
+print(final_plot)
+
+grid.text("π", x = unit(0.01, "npc"), y = unit(0.5, "npc"), just = "center", rot = 90, gp = gpar(fontsize = 15, col ="gray30"))
+grid.text("Mbp", x = unit(0.5, "npc"), y = unit(0.01, "npc"), just = "center", gp = gpar(fontsize = 15, col = "gray30"))
+
+dev.off()
+
+```
+
+```{r}
+gene_count <- ggplot(data_full_range, aes(window_start, gene_count))+geom_bar(stat="identity", fill="#A0937D")+facet_wrap(~chromosome, ncol=1, scales="free") +custom_theme
+width_inches <- 15
+height_inches <- 10
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/01_figures/gene_count_27_genomes.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(gene_count)
+dev.off()
+
+```
+
+
+
+

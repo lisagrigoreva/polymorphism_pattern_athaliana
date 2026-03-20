@@ -1,0 +1,158 @@
+---
+title: "mutation_rate_reanalysis"
+output: html_document
+date: "2025-11-27"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+mutation_rate <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/01_data/mutation_rate/Mutation_list/Unique_mutations.csv", sep=",", header=T)
+orthologous_genes <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_thaliana_27g_lyrata_31g/thaliana_lyrata_diversity_divergence_4fold_sites_pi.txt", sep="\t", header=T)
+```
+## Calculate unique mutations 
+```{r}
+mutation_rate <-mutation_rate[mutation_rate$Chromosome_region=="centromere" | mutation_rate$Chromosome_region=="chromosome-arm" | mutation_rate$Chromosome_region=="pericentromeric",]
+mutation_rate_summary <- mutation_rate %>% 
+  group_by(Genomic_region,Chromosome_region) %>% 
+  dplyr::summarise(num_of_mut = n())
+
+mutation_rate$new_region <- ifelse(mutation_rate$Genomic_region!="TE", "gene", mutation_rate$Genomic_region)
+
+mutation_rate_summary2 <- mutation_rate %>% 
+  group_by(new_region,Chromosome_region) %>% 
+  dplyr::summarise(num_of_mut = n())
+```
+## Visualize number of mutation per region 
+```{r}
+ggplot(mutation_rate_summary, aes(num_of_mut,Genomic_region))+geom_point()+facet_wrap(~Chromosome_region)
+
+plot_all <- ggplot(mutation_rate_summary2, aes(num_of_mut, reorder(new_region, num_of_mut), color = Chromosome_region)) +
+  geom_point(size=6, cex=21) + xlab("Number of mutations")+ylab("Genomic region") + theme_bw(base_size = 16)
+
+print(plot_all)
+```
+## Analyse how many mutations happened in orthologous genes  
+```{r}
+orthologous_genes$chromosome <- gsub("Chr", "", orthologous_genes$chromosome)
+orthologous_genes$chromosome <- as.numeric(orthologous_genes$chromosome)
+## Select data to be in orthologous genes 
+mutation_rate_orth_genes <- mutation_rate %>%
+  inner_join(orthologous_genes, 
+             by = c("CHROM" = "chromosome"),
+             relationship = "many-to-many") %>%
+  filter(POS >= window_pos_1 & POS <= window_pos_2)
+
+mutation_rate_orth_genes_summary <- mutation_rate_orth_genes %>% 
+  group_by(Genomic_region,Chromosome_region) %>% 
+  dplyr::summarise(num_of_mut = n())
+```
+## Orthologous regions 
+```{r}
+
+plot_orth_genes <- ggplot(mutation_rate_orth_genes_summary, aes(num_of_mut, reorder(Genomic_region, num_of_mut), color = Chromosome_region)) +
+  geom_point(size=3) + 
+  xlab("Number_of_mutations") + 
+  ylab("Genomic region") +
+  theme_bw() +  # Changed from theme_void()
+  theme(strip.text.x = element_text(size = 20, margin = margin(t = 10, b = 10)),
+        strip.text.y = element_text(size = 20, angle = 270, margin = margin(l = 10, r = 10)),
+        axis.text.x = element_text(size = 16, hjust = 1),
+        axis.text.y = element_text(size = 16),  # Removed margin
+        axis.title.x = element_text(size = 20, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 20, angle = 90, margin = margin(r = 10)),  # Reduced margin
+        axis.line.x = element_line(color = "black", size = 0.5),
+        axis.line.y.left = element_line(color = "black", size = 0.5),
+        #panel.spacing = unit(0.5, "lines"),
+        panel.grid.major.y = element_blank(),  # Remove horizontal gridlines
+        panel.grid.minor = element_blank(),    # Remove minor gridlines
+        legend.position = "none")
+print(plot_orth_genes)
+
+##
+mutation_rate_orth_genes_summary$new_region <- ifelse(mutation_rate_orth_genes_summary$Genomic_region!="TE", "gene", mutation_rate_orth_genes_summary$Genomic_region)
+ggplot(mutation_rate_orth_genes_summary, aes(num_of_mut, reorder(new_region, num_of_mut), color = Chromosome_region)) +
+  geom_point(size=2) + xlab("Number_of_mutations")+ylab("Genomic region")
+```
+## Create a combined plot
+```{r}
+x_max <- max(c(mutation_rate_orth_genes_summary$num_of_mut, 
+               mutation_rate_summary$num_of_mut))
+x_min <- min(c(mutation_rate_orth_genes_summary$num_of_mut, 
+               mutation_rate_summary$num_of_mut))
+
+# Plot A - with shared x-axis limits
+plot_A <- ggplot(mutation_rate_orth_genes_summary, 
+                 aes(num_of_mut, reorder(Genomic_region, num_of_mut), color = Chromosome_region)) +
+  geom_point(size=3) + 
+  xlab("Number of mutations") + 
+  ylab("Genomic region") +
+  scale_x_continuous(limits = c(x_min, x_max)) +
+  theme_bw() +
+  theme(strip.text.x = element_text(size = 20, margin = margin(t = 10, b = 10)),
+        strip.text.y = element_text(size = 20, angle = 270, margin = margin(l = 10, r = 10)),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 20, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 20, angle = 90, margin = margin(r = 10)),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        plot.margin = margin(10, 10, 10, 10))  # Add margins
+
+# Plot B - with shared x-axis limits
+
+plot_B <- ggplot(mutation_rate_summary, 
+                 aes(num_of_mut, reorder(Genomic_region, num_of_mut), color = Chromosome_region)) +
+  geom_point(size=3) + 
+  xlab("Number of mutations") + 
+  ylab("Genomic region") +
+  scale_x_continuous(limits = c(x_min, x_max)) +
+  theme_bw() +
+  theme(strip.text.x = element_text(size = 20, margin = margin(t = 10, b = 10)),
+        strip.text.y = element_text(size = 20, angle = 270, margin = margin(l = 10, r = 10)),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 20, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 20, angle = 90, margin = margin(r = 10)),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        plot.margin = margin(10, 10, 10, 10))  # Add margins
+
+# Combine with shared legend and bigger tags
+combined_plot <- (plot_A / plot_B) + 
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = 'A') &
+  theme(legend.position = "right",
+        plot.tag = element_text(size = 30))  # Bigger A and B labels
+
+combined_plot
+
+width_inches <- 14  # Increased width
+height_inches <- 20  # Increased height
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/number_of_mutations.png", 
+         width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(combined_plot)
+dev.off()
+```
+
+```{r}
+```
+
+
+
+
+
+
+
+

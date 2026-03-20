@@ -1,0 +1,175 @@
+---
+  title: "Untitled"
+author: "Elizaveta Grigoreva"
+date: '2023-06-29'
+output: html_document
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(scales)
+```
+
+#Read expression counts for 4 tissues 
+```{r}
+expression_4_tissues <- read.table("/groups/nordborg/projects/genome_organization/04_output/003_expression_27g_thaliana/counts.Araport_exons.bed", header = T)
+```
+Clean up dataset
+```{r}
+#Exclude pollen samples
+#expression_3_tissues <- dplyr::select(expression_4_tissues, -starts_with("P."))
+#Exclude MT genes
+expression_3_tissues <- expression_4_tissues[!grepl("^ATM", expression_4_tissues$gene), ]
+#Exclude CP genes
+expression_3_tissues <- expression_3_tissues[!grepl("^ATC", expression_3_tissues$gene), ]
+```
+
+```{r}
+#Log2 dataset
+expression_3_tissues_log2 <- expression_3_tissues  # First, create a copy of the original dataframe.
+# Apply log2 transformation to all columns except the first one
+#Add pseudocount
+pseudocount <- 1
+expression_3_tissues_log2 <- expression_3_tissues  # Create a copy of the dataframe
+# Apply log2 transformation to all columns except the first one, adding a pseudocount to avoid -Inf
+expression_3_tissues_log2[-1] <- lapply(expression_3_tissues[-1], function(x) log2(x + pseudocount))
+```
+Intersect with pericentromeric and arm gene defenition 
+```{r}
+#Read genes with location 
+genes_tair10_with_location <- read.table("/groups/nordborg/projects/genome_organization/01_data/tair10/all_genes_tair10.bed", header=F)
+colnames(genes_tair10_with_location) <- c("START", "STOP", "ATH")
+genes_tair10_with_location$CHR <- as.numeric(sub("AT", "", sub("G.*", "", genes_tair10_with_location$ATH)))
+filter_chromosome <- function(chromosome, boundary1, boundary2) {
+  arms <- genes_tair10_with_location[genes_tair10_with_location$CHR == chromosome & (genes_tair10_with_location$START < boundary1 - 4000000 | genes_tair10_with_location$START > boundary2 + 4000000),]
+  pericentromeric <- genes_tair10_with_location[genes_tair10_with_location$CHR == chromosome & genes_tair10_with_location$START > boundary1 - 4000000 & genes_tair10_with_location$START < boundary2 + 4000000,]
+  arms$region <- 'arms'
+  pericentromeric$region <- 'pericentromeric'
+  chr_df <- rbind(pericentromeric, arms)
+  chr_df$Chr <- chromosome
+  return(chr_df)
+}
+
+chromosome_boundaries <- list(
+  "1" = c(14841109, 17559778),
+  "2" = c(3823791, 6045243),
+  "3" = c(13597187, 15733925),
+  "4" = c(4203901, 6977949),
+  "5" = c(11784130, 14551809)
+)
+
+chromosomes_with_location <- do.call(rbind, lapply(names(chromosome_boundaries), function(chromosome) {
+  filter_chromosome(chromosome, chromosome_boundaries[[chromosome]][1], chromosome_boundaries[[chromosome]][2])
+}))
+```
+Map  genes expression to have a location
+```{r}
+expression_3_tissues_log2_with_location <- dplyr::inner_join(chromosomes_with_location,expression_3_tissues_log2, by=c("ATH"="gene"))
+#Filter unnecessary columns
+expression_3_tissues_log2_with_location <- expression_3_tissues_log2_with_location[,-(2:3)]
+
+```
+
+```{r}
+# Example to reshape the data to long format
+df_long <- pivot_longer(expression_3_tissues_log2_with_location, cols = -c(CHR, region, Chr,START), 
+                        names_to = "sample", values_to = "expression")
+
+# Extract tissue type from sample names
+df_long <- df_long %>%
+  mutate(tissue = case_when(
+    grepl("^F\\.", sample) ~ "F",
+    grepl("^P\\.", sample) ~ "P",
+    grepl("^R\\.", sample) ~ "R",
+    grepl("^S\\.", sample) ~ "S",
+    TRUE ~ "Unknown"  # Just in case there are unexpected prefixes
+  ))
+
+# Optional: Clean up sample names if necessary (e.g., removing batch info)
+df_long <- df_long %>%
+  mutate(sample = gsub("([^.]+)\\..*", "\\1", sample))
+
+window_size <- 500000 
+df_long$window_start <- (df_long$START %/% window_size) * window_size + 1
+# create a new column for the window end
+df_long$window_end <- df_long$window_start + window_size - 1
+df_long$expression <- as.numeric(df_long$expression)
+df_windows_avg <- df_long %>%
+  group_by(CHR,tissue,window_start, window_end) %>%
+  # Assuming 'sample' column uniqueness isn't needed for this calculation. If needed, adjust accordingly.
+  summarize(average_expression = mean(expression, na.rm = TRUE), .groups = 'drop')
+
+
+ggplot(df_windows_avg, aes(x = window_start, y = average_expression, color = tissue)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~CHR, ncol=1) +
+  theme_minimal() +
+  labs(color = "Tissue", x = "Window Start", y = "Average Expression")
+
+write.table(df_windows_avg, "/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/expression_3_tissues/expression_3_tissues_500kb.txt", quote = F, row.names = F)
+
+```
+
+```{r}
+library(broom )
+my_colors <- c("arms" = "#EE7214", "pericentromeric" = "gray30")
+# Group results per chromosome
+#results <- df_windows_avg %>% 
+#  dplyr::group_by(CHR) %>%  do(tidy(wilcox.test(average_expression ~ region, data = .)))
+
+results <- df_windows_avg  %>%  do(tidy(wilcox.test(average_expression ~ region, data = .)))
+
+# Adjust the p-values using BH correction
+results$p.adj <- p.adjust(results$p.value, method = "fdr")
+#Combine pvalue and start labels 
+
+results <- results %>%
+  mutate(signif_level = case_when(
+    p.adj < 0.001 ~ '***',
+    p.adj < 0.01  ~ '**',
+    p.adj < 0.05  ~ '*',
+    p.adj < 0.1   ~ '.',
+    TRUE          ~ 'NS'  # NS indicates not significant
+  ),
+  label = paste("p.adj=", p.adj, " ", signif_level))
+
+
+
+# Convert the adjusted p-values to scientific notation
+options(digits=2)
+results$p.adj.scientific <- format(results$p.adj, scientific = TRUE)
+
+ymax <- max(df_windows_avg$average_expression)  # Get the max value to position labels 
+
+boxplots <-ggboxplot(df_windows_avg, x = "tissue", y = "average_expression",
+                  fill = "region", alpha = 0.6, color="region",notch=T,notchwidth = 0.8) + 
+  geom_jitter(aes(col=region), size=2, show.legend = F,alpha = 0.6) +
+   #facet_wrap(~CHR, ncol=5)+
+  ylab("expression") +
+  xlab('tissue') + 
+  scale_fill_manual(values = my_colors) +
+  scale_color_manual(values = my_colors) +
+  scale_y_continuous(limits = c(0, 8)) +
+  theme(strip.text.x = element_text(size = 100)) +  # Adjust this value for desired size
+  geom_text(data = results, aes(x = 2.5, y = 8, label = paste(signif_level)), size=15,col = "gray30") +  # Adjust the size value here for desired label size
+  #custom_theme +theme(legend.position="none")
+
+
+
+width_inches <- 18
+height_inches <- 10
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/01_figures/expression_4_tissues.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(boxplots)
+dev.off()
+
+
+```
+
+
+
