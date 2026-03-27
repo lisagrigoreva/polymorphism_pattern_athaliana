@@ -12,4 +12,4 @@
 ml build-env/.f2021
 ml orthofinder/2.5.4-foss-2020b
 ulimit -n 6500
-orthofinder -f /groups/nordborg/projects/genome_organization/manuscript/03_processing/orthofinder_tair10_mn47  -d  -t 10 
+orthofinder -f /groups/nordborg/projects/genome_organization/manuscript/03_processing/orthofinder_tair10_mn47 -t 10 

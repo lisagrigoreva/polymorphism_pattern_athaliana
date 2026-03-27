@@ -1,0 +1,128 @@
+---
+title: "001_define_histone_states"
+output: html_document
+date: "2026-03-26"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+library(Biostrings)
+library(tidyverse)
+```
+In this notebook I define histone states along the A. thaliana genome based on V. Shukla 2026 paper 
+https://doi.org/10.1371/journal.pgen.1012015 
+```{r pressure, echo=FALSE}
+chromatin_states <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/histone_states_AT_26_segments.bed", header=T)
+```
+# Get length of the genome
+```{r}
+genome <- readDNAStringSet("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/TAIR10_chr_all.fas")
+genome_subset <- genome[1:5] # Take 5 chromosomes 
+# Rename them 
+names(genome_subset) <- gsub("Chr(\\d+).*", "\\1", names(genome_subset))
+# Get length per chromosome
+chromosome_length <- data.frame(width(genome_subset),names(genome_subset))
+colnames(chromosome_length) <-c("length_chrom", "chrom")
+## Attach chromosome length to the histone state
+chromatin_states <- merge(chromatin_states, chromosome_length, by=c("chrom"))
+# Write length of the chromosomes
+write.csv2(chromosome_length, "/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", quote = F, row.names = F)
+```
+# Assign merged chromatin state (based on figure 1 Shukla 2026)
+```{r}
+chromatin_states <- chromatin_states %>%
+  mutate(
+    merged_state = case_when(
+      grepl("^H", state) ~ "CH",
+      grepl("^F", state) ~ "FH",
+      grepl("^I", state) ~ "I",
+      grepl("^E", state) ~ "E"),
+    color = case_when(
+      grepl("^H", state) ~ "darkred",
+      grepl("^F", state) ~ "#5C5470",
+      grepl("^I", state) ~ "darkgrey",
+      grepl("^E", state) ~ "darkgreen"))
+```
+# Define a sliding window
+```{r}
+window_size <- 300000
+step_size   <- 100000
+
+calc_window_stats <- function(df, window_size, step_size) {
+  results <- list()
+  for (chr in unique(df$chrom)) {
+    chr_data   <- df[df$chrom == chr, ]
+    chr_length <- unique(chr_data$length_chrom)
+    for (ws in seq(0, chr_length, by = step_size)) {
+      we <- min(ws + window_size, chr_length)
+      overlap <- chr_data %>%
+        filter(start < we & end > ws) %>%
+        mutate(
+          clipped_len = pmin(end, we) - pmax(start, ws)
+        )
+      if (nrow(overlap) == 0) next
+      results[[length(results) + 1]] <- overlap %>%
+        group_by(merged_state, color) %>%
+        summarise(bp = sum(clipped_len), .groups = "drop") %>%
+        mutate(
+          pct          = (bp / (we - ws)) * 100,
+          chrom        = chr,
+          window_start = ws,
+          window_end   = we
+        )
+    }
+  }
+  bind_rows(results)
+}
+
+window_results <- calc_window_stats(chromatin_states, window_size, step_size)
+```
+# Plot
+```{r}
+library(ggplot2)
+
+# Extract color mapping
+color_map <- window_results %>%
+  distinct(merged_state, color) %>%
+  deframe()
+# Put 0 in the missing windows
+#window_results$pct[is.na(window_results$pct)] <- 0
+# Plot
+library(Cairo)
+output_path <- "/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states"
+# Open Cairo SVG device
+CairoPNG(
+  file   = file.path(output_path, "chromatin_states_plot.png"),
+  width  = 4800,   
+  height = 6000,   
+  dpi    = 600
+)
+
+# Your plot
+ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.1, color = "white", linewidth = 0.1) +
+  scale_fill_manual(values = color_map) +
+  facet_wrap(~ chrom, ncol = 1, scales = "free") +
+  labs(
+    x    = "Genomic position (Mbp)",
+    y    = "% of window",
+    fill = "Chromatin state"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    legend.position = "right"
+  ) +
+  scale_x_continuous(labels = scales::comma, expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0))
+
+# Close device
+dev.off()
+```
+# Write df of the histone states
+```{r}
+write.table(window_results,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv", quote = F, row.names = F)
+```
+
+
+
