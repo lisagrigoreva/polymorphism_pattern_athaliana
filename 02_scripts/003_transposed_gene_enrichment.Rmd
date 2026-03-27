@@ -13,8 +13,174 @@ BiocManager::install("clusterProfiler")
 organism = "org.At.tair.db"
 BiocManager::install(organism, character.only = TRUE)
 library(clusterProfiler)
-transposed_genes <- fread("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/syntenic_and_transposed_genes.txt")
+library(data.table)
+library(dplyr)
+transposed_genes <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/syn_and_transp_genes_thal.csv")
 ```
+## Check if genes have introns
+```{r}
+gene_annotation <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/TAIR10_GFF3_genes.gff") %>% filter(V3=="gene" | V3=="exon")
+gene_annotation$gene_id <- gsub(";.*", "",gene_annotation$V9)
+gene_annotation$gene_id <- gsub("ID=", "", gene_annotation$gene_id)
+```
+
+```{r}
+library(dplyr)
+
+# Count exons per gene (genes with >1 exon have introns)
+exon_counts <- gene_annotation %>%
+  filter(V3 == "exon") %>%
+  mutate(gene_id_clean = gsub("Parent=", "", gene_id),
+         gene_id_clean = gsub("\\.\\d+$", "", gene_id_clean)) %>%  # strip isoform suffix .1, .2 etc
+  group_by(gene_id_clean) %>%
+  summarise(n_exons = n_distinct(V4, V5)) %>%  # distinct exon start/end positions
+  mutate(has_intron = n_exons > 1)
+
+# Join to your transposed_genes table
+transposed_genes <- transposed_genes %>%
+  left_join(exon_counts, by = c("gene_thal" = "gene_id_clean"))
+
+# Check
+table(transposed_genes$has_intron)
+
+transposed_genes_transp <- transposed_genes[transposed_genes$is_transposed=="TRUE" & transposed_genes$has_intron=="TRUE",]
+transposed_genes_transp$context_combined = case_when(
+      transposed_genes_transp$context_lyr=="high_lyr" &  transposed_genes_transp$context_thal=="high_thal" ~ "high_high",
+     transposed_genes_transp$context_lyr=="low_lyr" &  transposed_genes_transp$context_thal=="low_thal" ~ "low_low",
+     transposed_genes_transp$context_lyr=="low_lyr" &  transposed_genes_transp$context_thal=="high_thal" ~ "low_high",
+     transposed_genes_transp$context_lyr=="high_lyr" &  transposed_genes_transp$context_thal=="low_thal" ~ "high_low",)
+
+table(transposed_genes_transp$has_intron, transposed_genes_transp$context_combined)
+```
+TE proximity 
+```{r}
+te_annotation <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T)
+```
+
+```{r}
+library(data.table)
+
+# Make sure both are data.tables
+setDT(transposed_genes)
+setDT(te_annotation)
+
+# Fix chromosome naming mismatch (Chr1 -> 1)
+# Extract chromosome number from TE name (AT1TE... -> 1)
+te_annotation[, chrom := gsub("AT(\\d+)TE.*", "\\1", Transposon_Name)]
+
+# For each gene, find nearest TE on same chromosome
+# Gene midpoint or you can use start/end
+transposed_genes[, gene_mid := (start_thal + end_thal) / 2]
+
+# Set keys for fast joining
+setkey(transposed_genes, chrom_thal, start_thal)
+setkey(te_annotation, chrom, Transposon_min_Start)
+
+# Calculate distance to nearest TE
+nearest_te <- te_annotation[, .(chrom, Transposon_min_Start, Transposon_max_End, 
+                                  Transposon_Family, Transposon_Super_Family)]
+
+# For each gene, compute min distance to any TE on same chrom
+dist_to_te <- transposed_genes[, {
+  same_chrom_tes <- nearest_te[chrom == chrom_thal]
+  
+  # Distance = 0 if overlapping, else gap between gene and TE
+  dist <- pmin(
+    abs(start_thal - same_chrom_tes$Transposon_max_End),
+    abs(end_thal   - same_chrom_tes$Transposon_min_Start)
+  )
+  
+  # Set distance to 0 if gene overlaps TE
+  overlaps <- same_chrom_tes$Transposon_min_Start <= end_thal & 
+              same_chrom_tes$Transposon_max_End   >= start_thal
+  dist[overlaps] <- 0
+  
+  min_idx <- which.min(dist)
+  .(dist_to_nearest_te     = dist[min_idx],
+    nearest_te_family      = same_chrom_tes$Transposon_Family[min_idx],
+    nearest_te_superfamily = same_chrom_tes$Transposon_Super_Family[min_idx])
+}, by = gene_thal]
+
+# Join back
+transposed_genes <- merge(transposed_genes, dist_to_te, by = "gene_thal")
+
+
+transposed_genes_transp <- transposed_genes[transposed_genes$is_transposed=="FALSE" & transposed_genes$has_intron=="TRUE",]
+
+transposed_genes_transp$context_combined = case_when(
+      transposed_genes_transp$context_lyr=="high_lyr" &  transposed_genes_transp$context_thal=="high_thal" ~ "high_high",
+     transposed_genes_transp$context_lyr=="low_lyr" &  transposed_genes_transp$context_thal=="low_thal" ~ "low_low",
+     transposed_genes_transp$context_lyr=="low_lyr" &  transposed_genes_transp$context_thal=="high_thal" ~ "low_high",
+     transposed_genes_transp$context_lyr=="high_lyr" &  transposed_genes_transp$context_thal=="low_thal" ~ "high_low",)
+
+transposed_genes_transp_not_near_te <-transposed_genes_transp[transposed_genes_transp$dist_to_nearest_te >0,]
+
+table(transposed_genes_transp_not_near_te$has_intron, transposed_genes_transp_not_near_te$context_combined)
+summary(transposed_genes_transp_not_near_te$dist_to_nearest_te)
+```
+
+## Get a fasta of these genes 
+```{r}
+library(data.table)
+library(Biostrings)
+
+
+library(Biostrings)
+
+# Read the FASTA genome correctly
+genome <- readDNAStringSet("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/TAIR10_chr_all.fas")
+names(genome) <- gsub(" .*", "", names(genome)) # Fix names
+genes_dt <- transposed_genes_transp_not_near_te
+
+sequences <- DNAStringSet(mapply(function(chr, s, e) {
+  genome[[chr]][s:e]
+}, paste0("Chr", genes_dt$chrom_thal), genes_dt$start_thal, genes_dt$end_thal))
+
+names(sequences) <- genes_dt$gene_thal
+
+writeXStringSet(sequences, filepath = "/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/fasta/not_transposed_genes.fasta")
+
+gene_lengths <- data.table(gene = names(sequences), length_bp = width(sequences))
+gene_lengths
+
+write.table(gene_lengths, 
+            file = "/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/fasta/gene_lengths.txt", 
+            quote = FALSE, 
+            row.names = FALSE)
+```
+## See if gene appears in different places
+```{r}
+library(data.table)
+
+blast <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/fasta/blast_results_not_transposed_genes.txt", header = FALSE,
+               col.names = c("qseqid","sseqid","pident","length",
+                             "mismatch","gapopen","qstart","qend",
+                             "sstart","send","evalue","bitscore"))
+
+# Count number of hits per gene
+hits_per_gene <- blast[, .(n_hits = .N), by = qseqid]
+hits_per_gene
+library(data.table)
+library(ggplot2)
+
+hits_per_gene <- blast[, .(n_hits = .N), by = qseqid]
+
+ggplot(hits_per_gene, aes(x = reorder(qseqid, -n_hits), y = n_hits)) +
+  geom_bar(stat = "identity", fill = "#1D9E75") +
+  theme_minimal() +
+  #theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7)) +
+  labs(x = "Gene", y = "Number of BLAST Hits", title = "")
+
+
+ggplot(blast, aes(pident, length))+geom_point()
+## Calculate coverage percentage 
+coverage <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/fasta/gene_lengths.txt", header = T)
+blast_with_length <- inner_join(blast,coverage,by=c("qseqid"="gene") )
+blast_with_length$perc_cov <- (blast_with_length$length/blast_with_length$length_bp) *100
+
+ggplot(blast_with_length, aes(perc_cov,pident))+geom_point()
+```
+
 Run Gene Ontology in R 
 ```{r}
 library(clusterProfiler)

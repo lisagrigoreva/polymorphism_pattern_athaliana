@@ -1,0 +1,54 @@
+---
+title: "002_chromatin_states_vs_diversity"
+output: html_document
+date: "2026-03-26"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+```
+This script calculates pi in sliding windows and assigns it to the chromatin states.
+```{r}
+# Read chromatin states
+chromatin_states <- read.csv("/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv")
+# Pi in thaliana
+pi_4fold_thaliana <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_div_thal_lyr/4fol_sites_thal_27g_tair10_based_pi.txt", header=T)
+pi_4fold_thaliana$chromosome <- gsub("Chr", "", pi_4fold_thaliana$chromosome)
+#Chromosome length
+chromosome_lengths <- read.csv("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", header=T)
+```
+# Calculate pi in windows 
+```{r}
+pi_4fold_thaliana$chrom_length <- chromosome_lengths$length[
+  match(pi_4fold_thaliana$chromosome, chromosome_lengths$chrom)
+]
+# Define windows 
+window_size <- 300000
+step_size   <- 100000
+
+calc_window_stats <- function(df, window_size, step_size) {
+  results <- list()
+  for (chr in unique(df$chromosome)) {
+    chr_data   <- df[df$chromosome == chr, ]
+    chr_length <- unique(chr_data$chrom_length)
+    for (ws in seq(0, chr_length, by = step_size)) {
+      we      <- min(ws + window_size, chr_length)
+      overlap <- chr_data %>% filter(window_pos_1 >= ws & window_pos_1 < we)
+      if (nrow(overlap) == 0) next
+      results[[length(results) + 1]] <- data.frame(
+        chromosome            = chr,
+        window_start          = ws,
+        window_end            = we,
+        avg_dxy_4_fold_window = sum(overlap$count_diffs_dxy_4_fold) / sum(overlap$count_comparisons_dxy_4_fold)
+      )
+    }
+  }
+  bind_rows(results)
+}
+
+window_results <- calc_window_stats(pi_4fold_thaliana, window_size, step_size)
+
+```
+# Plot
+```{r}
+```
