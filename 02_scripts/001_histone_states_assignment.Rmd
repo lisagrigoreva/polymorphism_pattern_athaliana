@@ -27,7 +27,7 @@ colnames(chromosome_length) <-c("length_chrom", "chrom")
 ## Attach chromosome length to the histone state
 chromatin_states <- merge(chromatin_states, chromosome_length, by=c("chrom"))
 # Write length of the chromosomes
-write.csv2(chromosome_length, "/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", quote = F, row.names = F)
+#write.csv2(chromosome_length, "/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", quote = F, row.names = F)
 ```
 # Assign merged chromatin state (based on figure 1 Shukla 2026)
 ```{r}
@@ -47,7 +47,7 @@ chromatin_states <- chromatin_states %>%
 # Define a sliding window
 ```{r}
 window_size <- 300000
-step_size   <- 100000
+step_size   <- 150000
 
 calc_window_stats <- function(df, window_size, step_size) {
   results <- list()
@@ -78,9 +78,17 @@ calc_window_stats <- function(df, window_size, step_size) {
 
 window_results <- calc_window_stats(chromatin_states, window_size, step_size)
 ```
+# Write df of the histone states
+```{r}
+write.csv2(window_results,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv", quote = F, row.names = F)
+```
+
+
 # Plot
 ```{r}
 library(ggplot2)
+
+
 
 # Extract color mapping
 color_map <- window_results %>%
@@ -99,9 +107,22 @@ CairoPNG(
   dpi    = 600
 )
 
+
+centromeres <- read.table('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_naish_2021_science.txt',header=T)
+
+#Add NA to the centromere boundaries
+window_results <- window_results %>%
+  dplyr::mutate(chrom = as.character(chrom)) %>%
+  dplyr::left_join(centromeres %>% mutate(chrom = as.character(chrom)), by = "chrom") %>%
+  dplyr::mutate(
+    bp  = ifelse(window_start >= start & window_start <= stop, NA, bp),
+    pct = ifelse(window_start >= start & window_start <= stop, NA, pct)
+  ) %>%
+  dplyr::select(-start, -stop)  # optionally drop centromere boundary columns
+
 # Your plot
 ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)) +
-  geom_bar(stat = "identity", position = "stack", width = 0.1, color = "white", linewidth = 0.1) +
+  geom_bar(stat = "identity", position = "stack", width = 0.15, color = "white", linewidth = 0.1) +
   scale_fill_manual(values = color_map) +
   facet_wrap(~ chrom, ncol = 1, scales = "free") +
   labs(
@@ -118,10 +139,6 @@ ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)
 
 # Close device
 dev.off()
-```
-# Write df of the histone states
-```{r}
-write.table(window_results,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv", quote = F, row.names = F)
 ```
 
 

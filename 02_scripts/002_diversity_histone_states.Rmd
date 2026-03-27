@@ -10,36 +10,41 @@ library(data.table)
 This script calculates pi in sliding windows and assigns it to the chromatin states.
 ```{r}
 # Read chromatin states
-chromatin_states <- read.csv("/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv")
+chromatin_states <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv")
 # Pi in thaliana
 pi_4fold_thaliana <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_div_thal_lyr/4fol_sites_thal_27g_tair10_based_pi.txt", header=T)
 pi_4fold_thaliana$chromosome <- gsub("Chr", "", pi_4fold_thaliana$chromosome)
 #Chromosome length
-chromosome_lengths <- read.csv("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", header=T)
+chromosome_lengths <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", header=T)
 ```
 # Calculate pi in windows 
 ```{r}
+library(dplyr)
 pi_4fold_thaliana$chrom_length <- chromosome_lengths$length[
   match(pi_4fold_thaliana$chromosome, chromosome_lengths$chrom)
 ]
 # Define windows 
 window_size <- 300000
-step_size   <- 100000
+step_size   <- 150000
 
 calc_window_stats <- function(df, window_size, step_size) {
   results <- list()
   for (chr in unique(df$chromosome)) {
     chr_data   <- df[df$chromosome == chr, ]
     chr_length <- unique(chr_data$chrom_length)
+    
     for (ws in seq(0, chr_length, by = step_size)) {
       we      <- min(ws + window_size, chr_length)
       overlap <- chr_data %>% filter(window_pos_1 >= ws & window_pos_1 < we)
+      
       if (nrow(overlap) == 0) next
+      
       results[[length(results) + 1]] <- data.frame(
-        chromosome            = chr,
-        window_start          = ws,
-        window_end            = we,
-        avg_dxy_4_fold_window = sum(overlap$count_diffs_dxy_4_fold) / sum(overlap$count_comparisons_dxy_4_fold)
+        chromosome           = chr,
+        window_start         = ws,
+        window_end           = we,
+        avg_pi_4_fold_window = sum(overlap$count_diffs, na.rm = TRUE) /
+                               sum(overlap$count_comparisons, na.rm = TRUE)
       )
     }
   }
@@ -49,6 +54,146 @@ calc_window_stats <- function(df, window_size, step_size) {
 window_results <- calc_window_stats(pi_4fold_thaliana, window_size, step_size)
 
 ```
+# Attach histone states
+```{r}
+window_results$chromosome <- as.numeric(window_results$chromosome)
+pi_4fold_thaliana_with_chromatin <- left_join(window_results, chromatin_states, by=c("chromosome"="chrom","window_start"="window_start", "window_end"="window_end"))
+
+```
 # Plot
 ```{r}
+library(ggplot2)
+library(dplyr)
+
+# Filter to CH state only and join with pi
+ch_data <- pi_4fold_thaliana_with_chromatin %>%
+  dplyr::filter(merged_state == "CH") %>%
+  dplyr::select(chromosome, window_start, window_end, avg_pi_4_fold_window, pct) %>%
+  dplyr::rename(pct_CH = pct)
+
+# Plot per chromosome
+ggplot(ch_data, aes(x = pct_CH, y = avg_pi_4_fold_window)) +
+  geom_point(alpha = 0.6, color = "darkred") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(
+    x = "% Constitutive Heterochromatin (CH)",
+    y = "Avg Pi (4-fold sites)",
+    title = "Pi vs % Constitutive Heterochromatin per Chromosome"
+  ) +
+  theme_bw()
+
+
 ```
+
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+ch_data <- pi_4fold_thaliana_with_chromatin %>%
+  dplyr::filter(merged_state == "CH") %>%
+  dplyr::mutate(window_mid = (window_start + window_end) / 2)
+
+# Plot 1: avg pi along chromosome
+p1 <- ggplot(ch_data, aes(x = window_start, y = avg_pi_4_fold_window)) +
+  geom_line(color = "steelblue") +
+  geom_point(size = 0.8, color = "steelblue") +
+  facet_wrap(~ chromosome, scales = "free", nrow = 1) +
+  labs(x = NULL, y = "Avg Pi (4-fold)") +
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# Plot 2: % CH along chromosome
+p2 <- ggplot(ch_data, aes(x = window_start, y = pct)) +
+  geom_col(fill = "darkred", alpha = 0.7) +
+  facet_wrap(~ chromosome, scales = "free", nrow = 1) +
+  labs(x = "Genomic position", y = "% CH") +
+  theme_bw()
+
+# Stack them
+p1 / p2
+```
+# Plot with centromere gap
+```{r}
+library(ggplot2)
+library(dplyr)
+# Add centromere boundaries 
+centromere <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_naish_2021_science.txt", header = T) %>%
+  dplyr::rename(chromosome = chrom)
+
+ch_data <- pi_4fold_thaliana_with_chromatin %>%
+  dplyr::filter(merged_state == "CH") %>%
+  dplyr::mutate(chromosome = as.character(chromosome)) %>%
+  dplyr::left_join(centromere %>% mutate(chromosome = as.character(chromosome)), by = "chromosome") %>%
+  dplyr::mutate(
+    avg_pi_4_fold_window = ifelse(window_start >= start & window_start <= stop, NA, avg_pi_4_fold_window),
+    pct                  = ifelse(window_start >= start & window_start <= stop, NA, pct)
+  )
+
+scale_factor <- max(ch_data$avg_pi_4_fold_window, na.rm = TRUE) / 
+                max(ch_data$pct, na.rm = TRUE)
+
+ggplot(ch_data, aes(x = window_start)) +
+  geom_line(aes(y = avg_pi_4_fold_window), color = "steelblue") +
+  geom_line(aes(y = pct * scale_factor), color = "darkred", alpha = 1) +
+  scale_y_continuous(
+    name = "Avg Pi (4-fold)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "% Constitutive Heterochromatin (CH)")
+  ) +
+  scale_x_continuous(labels = scales::comma) +
+  facet_wrap(~ chromosome, scales = "free", nrow = 5) +
+  labs(x = "Window start (bp)") +
+  theme_bw() +
+  theme(
+    axis.title.y.left  = element_text(color = "steelblue"),
+    axis.text.y.left   = element_text(color = "steelblue"),
+    axis.title.y.right = element_text(color = "darkred"),
+    axis.text.y.right  = element_text(color = "darkred"),
+    strip.background   = element_rect(fill = "grey90")
+  )
+```
+# Plot without centromere gap
+```{r}
+
+library(Cairo)
+output_path <- "/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states"
+# Open Cairo SVG device
+CairoPNG(
+  file   = file.path(output_path, "chromatin_states_diversity_4fold_plot.png"),
+  width  = 4800,   
+  height = 6000,   
+  dpi    = 600
+)
+
+ch_data <- pi_4fold_thaliana_with_chromatin %>%
+  dplyr::filter(merged_state == "CH") 
+
+scale_factor <- max(ch_data$avg_pi_4_fold_window, na.rm = TRUE) / 
+                max(ch_data$pct, na.rm = TRUE)
+
+ggplot(ch_data, aes(x = window_start)) +
+  geom_line(aes(y = avg_pi_4_fold_window), color = "steelblue") +
+  geom_line(aes(y = pct * scale_factor), color = "darkred", alpha = 1) +
+  scale_y_continuous(
+    name = "Avg Pi (4-fold)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "% Constitutive Heterochromatin (CH)")
+  ) +
+  scale_x_continuous(labels = scales::comma) +
+  facet_wrap(~ chromosome, scales = "free", nrow = 5) +
+  labs(x = "Window start (bp)") +
+  theme_bw() +
+  theme(
+    axis.title.y.left  = element_text(color = "steelblue"),
+    axis.text.y.left   = element_text(color = "steelblue"),
+    axis.title.y.right = element_text(color = "darkred"),
+    axis.text.y.right  = element_text(color = "darkred"),
+    strip.background   = element_rect(fill = "grey90")
+  )
+dev.off()
+```
+
+
+
+
