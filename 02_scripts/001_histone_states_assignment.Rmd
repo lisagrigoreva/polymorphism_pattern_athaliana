@@ -83,12 +83,9 @@ window_results <- calc_window_stats(chromatin_states, window_size, step_size)
 write.csv2(window_results,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv", quote = F, row.names = F)
 ```
 
-
 # Plot
 ```{r}
 library(ggplot2)
-
-
 
 # Extract color mapping
 color_map <- window_results %>%

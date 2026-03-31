@@ -1,0 +1,106 @@
+---
+title: "003_duplicated_genes_distribution"
+output: html_document
+date: "2026-03-27"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+```
+
+```{r}
+duplicated_genes_robin <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/duplicated_genes_tair10/dupliated_genes.txt", sep=",")
+```
+# Connect duplicated genes with coordinates 
+```{r}
+gene_annotation <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/TAIR10_GFF3_genes.gff") %>% filter(V3=="gene")
+gene_annotation$gene_id <- gsub(";.*", "",gene_annotation$V9)
+gene_annotation$gene_id <- gsub("ID=", "", gene_annotation$gene_id)
+```
+# assign start stop to the pairs
+```{r}
+duplicated_genes_robin <- duplicated_genes_robin %>%
+  # coordinates for gene 1 (V1)
+  dplyr::left_join(gene_annotation %>% select(gene_id, chr1 = V1, start1 = V4, stop1 = V5), 
+                   by = c("V1" = "gene_id")) %>%
+  # coordinates for gene 2 (V2)
+  dplyr::left_join(gene_annotation %>% select(gene_id, chr2 = V1, start2 = V4, stop2 = V5), 
+                   by = c("V2" = "gene_id"))
+```
+# Plot
+```{r}
+duplicated_genes_robin %>%
+  dplyr::filter(chr1 %in% paste0("Chr", 1:5),
+                chr2 %in% paste0("Chr", 1:5)) %>%
+  ggplot(aes(x = start1, y = start2)) +
+  geom_point(size = 0.5, alpha = 0.5, color = "steelblue") +
+  facet_grid(chr2 ~ chr1, scales = "free") +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Position on Chr1 gene", y = "Position on Chr2 gene") +
+  theme_bw() +
+  theme(
+    strip.background = element_rect(fill = "grey90"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+    axis.text.y = element_text(size = 6)
+  )
+
+```
+## Density of duplicated genes
+```{r}
+duplicated_genes_robin %>%
+  dplyr::filter(chr1 %in% paste0("Chr", 1:5)) %>%
+  tidyr::pivot_longer(cols = c(start1, start2), 
+                      names_to = "gene", values_to = "position") %>%
+  dplyr::mutate(chr = ifelse(gene == "start1", chr1, chr2)) %>%
+  dplyr::filter(chr %in% paste0("Chr", 1:5)) %>%
+  ggplot(aes(x = position, y = chr)) +
+  geom_point(shape = "|", size = 3, alpha = 0.3, color = "#5C5470") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Position (bp)", y = NULL) +
+  theme_bw()
+```
+```{r}
+duplicated_genes_robin %>%
+  tidyr::pivot_longer(
+    cols = c(start1, start2, chr1, chr2),
+    names_to = c(".value", "gene"),
+    names_pattern = "(start|chr)(1|2)"
+  ) %>%
+  dplyr::filter(chr %in% paste0("Chr", 1:5)) %>%
+  ggplot(aes(x = start)) +
+  geom_histogram(bins = 50, fill = "#9B0F06", color = "white", alpha = 0.8) +
+  facet_wrap(~ chr, scales = "free", nrow = 5) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Position (bp)", y = "Count of duplicated genes") +
+  theme_bw()
+```
+
+```{r}
+# get all duplicated gene IDs
+duplicated_ids <- c(duplicated_genes_robin$V1, duplicated_genes_robin$V2)
+
+# flag genes in annotation
+gene_annotation_flagged <- gene_annotation %>%
+  dplyr::mutate(
+    chr      = V1,
+    start    = V4,
+    status   = ifelse(gene_id %in% duplicated_ids, "Duplicated", "Non-duplicated")
+  ) %>%
+  dplyr::filter(chr %in% paste0("Chr", 1:5))
+
+ggplot(gene_annotation_flagged, aes(x = start, fill = status)) +
+  geom_histogram(bins = 50, color = "white", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("Duplicated" = "#9B0F06", "Non-duplicated" = "#406093")) +
+  facet_wrap(~ chr, scales = "free", nrow = 5) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Position (bp)", y = "Count of genes", fill = NULL) +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+
+
+
+
+

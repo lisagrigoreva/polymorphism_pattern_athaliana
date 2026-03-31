@@ -58,7 +58,6 @@ window_results <- calc_window_stats(pi_4fold_thaliana, window_size, step_size)
 ```{r}
 window_results$chromosome <- as.numeric(window_results$chromosome)
 pi_4fold_thaliana_with_chromatin <- left_join(window_results, chromatin_states, by=c("chromosome"="chrom","window_start"="window_start", "window_end"="window_end"))
-
 ```
 # Plot
 ```{r}
@@ -71,57 +70,90 @@ ch_data <- pi_4fold_thaliana_with_chromatin %>%
   dplyr::select(chromosome, window_start, window_end, avg_pi_4_fold_window, pct) %>%
   dplyr::rename(pct_CH = pct)
 
-# Plot per chromosome
+
+library(ggpubr)
+
 ggplot(ch_data, aes(x = pct_CH, y = avg_pi_4_fold_window)) +
-  geom_point(alpha = 0.6, color = "darkred") +
+geom_point(alpha = 0.6, fill = "#4477AA", color = "black", 
+             shape = 21, size = 3, stroke = 0.5) +
   geom_smooth(method = "lm", se = TRUE, color = "black") +
+  geom_vline(xintercept = 20, linetype = "dashed", color = "black", linewidth = 0.4) +
+  stat_cor(aes(label = ..r.label..), method = "pearson", 
+         label.x.npc = "center", label.y.npc = "top", size = 3.5)+
   labs(
     x = "% Constitutive Heterochromatin (CH)",
-    y = "Avg Pi (4-fold sites)",
-    title = "Pi vs % Constitutive Heterochromatin per Chromosome"
+    y = expression(pi ~ "(4-fold sites)")
   ) +
-  theme_bw()
+  theme_bw(base_size = 13) +
+  facet_wrap(~ chromosome, nrow = 1)
+
+ggplot(ch_data, aes(x = pct_CH)) +
+  geom_histogram(binwidth = 5, fill = "#4477AA",color = "black", alpha = 0.8) +
+  geom_vline(xintercept = 15, linetype = "dashed", color = "black", linewidth = 0.4) +
+  labs(
+    x = "% Constitutive Heterochromatin (CH)",
+    y = "Count"
+  ) +
+  theme_bw(base_size = 13) +
+  facet_wrap(~ chromosome, nrow = 1)
 
 
+
+# Compute per-chromosome medians
+median_data <- ch_data %>%
+  group_by(chromosome) %>%
+  summarise(median_pct = median(pct_CH, na.rm = TRUE))
+
+ggplot(ch_data, aes(x = pct_CH)) +
+  geom_histogram(binwidth = 5, fill = "#4477AA", color = "black", alpha = 0.8) +
+  geom_vline(xintercept = 15, linetype = "dashed", color = "black", linewidth = 0.4) +
+  geom_vline(data = median_data, aes(xintercept = median_pct),
+             linetype = "solid", color = "red", linewidth = 0.6) +
+  labs(
+    x = "% Constitutive Heterochromatin (CH)",
+    y = "Count"
+  ) +
+  theme_bw(base_size = 13) +
+  facet_wrap(~ chromosome, nrow = 1)
 ```
-
-
-
+# Plot without centromere gap
 ```{r}
-library(ggplot2)
-library(dplyr)
-library(patchwork)
+scale_factor <- max(ch_data$avg_pi_4_fold_window, na.rm = TRUE) / 
+                max(ch_data$pct_CH, na.rm = TRUE)
 
-ch_data <- pi_4fold_thaliana_with_chromatin %>%
-  dplyr::filter(merged_state == "CH") %>%
-  dplyr::mutate(window_mid = (window_start + window_end) / 2)
-
-# Plot 1: avg pi along chromosome
-p1 <- ggplot(ch_data, aes(x = window_start, y = avg_pi_4_fold_window)) +
-  geom_line(color = "steelblue") +
-  geom_point(size = 0.8, color = "steelblue") +
-  facet_wrap(~ chromosome, scales = "free", nrow = 1) +
-  labs(x = NULL, y = "Avg Pi (4-fold)") +
+ggplot(ch_data, aes(x = window_start)) +
+  geom_rect(
+    data = ch_data %>% filter(pct_CH > 20),
+    aes(xmin = window_start, xmax = window_end,
+        ymin = -Inf, ymax = Inf),
+    fill = "darkred", alpha = 0.15, inherit.aes = FALSE
+  ) +
+ geom_line(aes(y = avg_pi_4_fold_window), color = "#4477AA", linewidth = 1.2) +
+geom_line(aes(y = pct_CH * scale_factor), color = "darkred", alpha = 1, linewidth = 1.2) +
+  scale_y_continuous(
+    name = "Avg Pi (4-fold)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "% Constitutive Heterochromatin (CH)")
+  ) +
+  scale_x_continuous(labels = scales::comma) +
+  facet_wrap(~ chromosome, scales = "free", nrow = 5) +
+  labs(x = "Window start (bp)") +
   theme_bw() +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
-
-# Plot 2: % CH along chromosome
-p2 <- ggplot(ch_data, aes(x = window_start, y = pct)) +
-  geom_col(fill = "darkred", alpha = 0.7) +
-  facet_wrap(~ chromosome, scales = "free", nrow = 1) +
-  labs(x = "Genomic position", y = "% CH") +
-  theme_bw()
-
-# Stack them
-p1 / p2
+  theme(
+    axis.title.y.left  = element_text(color = "#4477AA"),
+    axis.text.y.left   = element_text(color = "#4477AA"),
+    axis.title.y.right = element_text(color = "darkred"),
+    axis.text.y.right  = element_text(color = "darkred"),
+    strip.background   = element_rect(fill = "grey90")
+  )
 ```
+
 # Plot with centromere gap
 ```{r}
 library(ggplot2)
 library(dplyr)
 # Add centromere boundaries 
-centromere <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_naish_2021_science.txt", header = T) %>%
-  dplyr::rename(chromosome = chrom)
+centromere <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_wlodzimierz2023.txt", header = T) %>%
+#  dplyr::rename(chromosome = chrom)
 
 ch_data <- pi_4fold_thaliana_with_chromatin %>%
   dplyr::filter(merged_state == "CH") %>%
