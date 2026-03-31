@@ -80,7 +80,7 @@ window_results <- calc_window_stats(chromatin_states, window_size, step_size)
 ```
 # Write df of the histone states
 ```{r}
-write.csv2(window_results,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv", quote = F, row.names = F)
+write.csv2(window_results,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows_300kb_150slide.csv", quote = F, row.names = F)
 ```
 
 # Plot
@@ -99,23 +99,24 @@ output_path <- "/groups/nordborg/projects/genome_organization/manuscript/04_outp
 # Open Cairo SVG device
 CairoPNG(
   file   = file.path(output_path, "chromatin_states_plot.png"),
-  width  = 4800,   
-  height = 6000,   
-  dpi    = 600
+  width  = 5500,   
+  height = 3500,   
+  dpi    = 600,
+  pointsize = 9
 )
 
 
 centromeres <- read.table('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_naish_2021_science.txt',header=T)
 
 #Add NA to the centromere boundaries
-window_results <- window_results %>%
-  dplyr::mutate(chrom = as.character(chrom)) %>%
-  dplyr::left_join(centromeres %>% mutate(chrom = as.character(chrom)), by = "chrom") %>%
-  dplyr::mutate(
-    bp  = ifelse(window_start >= start & window_start <= stop, NA, bp),
-    pct = ifelse(window_start >= start & window_start <= stop, NA, pct)
-  ) %>%
-  dplyr::select(-start, -stop)  # optionally drop centromere boundary columns
+#window_results <- window_results %>%
+#  dplyr::mutate(chrom = as.character(chrom)) %>%
+#  dplyr::left_join(centromeres %>% mutate(chrom = as.character(chrom)), by = "chrom") %>%
+#  dplyr::mutate(
+#    bp  = ifelse(window_start >= start & window_start <= stop, NA, bp),
+#    pct = ifelse(window_start >= start & window_start <= stop, NA, pct)
+#  ) %>%
+#  dplyr::select(-start, -stop)  # optionally drop centromere boundary columns
 
 # Your plot
 ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)) +
@@ -127,7 +128,7 @@ ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)
     y    = "% of window",
     fill = "Chromatin state"
   ) +
-  theme_minimal(base_size = 15) +
+  theme_minimal(base_size = 12) +
   theme(
     legend.position = "right"
   ) +
@@ -137,6 +138,5 @@ ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)
 # Close device
 dev.off()
 ```
-
 
 
