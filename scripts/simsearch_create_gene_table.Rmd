@@ -1,0 +1,131 @@
+---
+title: "ortholgous_genes_pannagram"
+output: html_document
+date: "2026-04-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+```
+
+```{r}
+# Read orthology table
+mn47_orthologous_genes_table <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_athal_31lyr/filtered/MN47_85_90.cnt")
+# Get sequences coordinates
+mn47_orthologous_genes_coordinates <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_athal_31lyr/MN47_85_90.table", header=T)
+# Select necessary columns
+mn47_orthologous_genes_coordinates <- mn47_orthologous_genes_coordinates %>% dplyr::select(sequence,beg.genome,end.genome,genome.chr)
+# Get only 1-1 genes from the table 
+mn47_orthologous_genes_coordinates_1to1 <- mn47_orthologous_genes_coordinates$sequence %in% rownames(mn47_orthologous_genes_table)  
+mn47_orthologous_genes_coordinates_1to1 <- mn47_orthologous_genes_coordinates[mn47_orthologous_genes_coordinates_1to1,]
+write.csv(mn47_orthologous_genes_coordinates_1to1,"/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/coordinates_without_genes.csv" , quote = F, row.names = F)
+```
+
+# Get gene names from MN47 annotation
+```{r}
+#Upload MN47 annotation
+library(rtracklayer)
+mn47_annotation <- import("/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/8_longest_scaffolds.gtf") 
+# Get gene names and coordinates 
+mn47_annotation$gene_name <- sub(".*ID:([A-Z0-9]+)\\..*", "\\1", mn47_annotation$note)
+```
+## Find these genes
+```{r}
+library(GenomicRanges)
+# Find an overlap
+genes_gr <- GRanges(
+  seqnames = mn47_orthologous_genes_coordinates_1to1$genome.chr,
+  ranges = IRanges(start = mn47_orthologous_genes_coordinates_1to1$beg.genome, 
+                   end = mn47_orthologous_genes_coordinates_1to1$end.genome)
+)
+
+hits <- findOverlaps(genes_gr, mn47_annotation)
+
+matched_annotation <- mn47_annotation[subjectHits(hits)]
+matched_annotation$sequence <- mn47_orthologous_genes_coordinates$sequence[queryHits(hits)]
+```
+
+```{r}
+library(rtracklayer)
+library(GenomicRanges)
+# Import and extract gene names from CDS rows (where note exists)
+mn47_annotation <- import("/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/8_longest_scaffolds.gtf")
+# Create GRanges from 1-to-1 orthologous coordinates
+mn47_genes <- mn47_annotation[mn47_annotation$type=="gene",]
+
+genes_gr <- GRanges(
+  seqnames = mn47_orthologous_genes_coordinates_1to1$genome.chr,
+  ranges = IRanges(
+    start = mn47_orthologous_genes_coordinates_1to1$beg.genome,
+    end = mn47_orthologous_genes_coordinates_1to1$end.genome
+  )
+)
+
+# Find overlaps
+hits <- findOverlaps(genes_gr, mn47_genes)
+
+overlap_width <- width(pintersect(genes_gr[queryHits(hits)], mn47_genes[subjectHits(hits)]))
+
+result <- data.frame(
+  thaliana_id = mn47_orthologous_genes_coordinates_1to1$sequence[queryHits(hits)],
+  lyrata_chr = as.character(seqnames(mn47_genes)[subjectHits(hits)]),
+  lyrata_start = mn47_orthologous_genes_coordinates_1to1$beg.genome[queryHits(hits)],
+  lyrata_end = mn47_orthologous_genes_coordinates_1to1$end.genome[queryHits(hits)],
+  lyrata_id = mn47_genes$gene_id[subjectHits(hits)],
+  lyrata_start_annotation = start(mn47_genes)[subjectHits(hits)],
+  lyrata_end_annotation = end(mn47_genes)[subjectHits(hits)],
+  overlap_width = overlap_width
+)
+
+# Remove any duplicates
+result_clean <- result[order(-result$overlap_width), ]
+# Remove any thaliana_id or lyrata_id that appears more than once (both directions)
+result_clean <- result_clean[!(duplicated(result_clean$thaliana_id) | duplicated(result_clean$thaliana_id, fromLast = TRUE)), ]
+result_clean <- result_clean[!(duplicated(result_clean$lyrata_id)   | duplicated(result_clean$lyrata_id,   fromLast = TRUE)), ]
+
+write.table(result_clean, "/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/lyata_mn47_v2_thaliana_tair10_only_unique_thal_lyr.csv", quote = F, row.names = F)
+```
+## Simsearch based on the capsella
+```{r}
+# Read orthology table
+capsella_orthologous_genes_table <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/pannagram_thaliana_lyrata_capsella/simsearch/GCA_040086895_85_90.cnt")
+# Get sequences coordinates
+capsella_orthologous_genes_coordinates <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/pannagram_thaliana_lyrata_capsella/simsearch/GCA_040086895_85_90.table", header=T)
+# Select necessary columns
+capsella_orthologous_genes_coordinates <- capsella_orthologous_genes_coordinates %>% select(sequence,beg.genome,end.genome,genome.chr)
+## Write the output table 
+write.table(capsella_orthologous_genes_coordinates, "/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/capsella_vs_thaliana_tair10_all_orhtologous_genes.csv", quote = F, row.names = F)
+```
+## All orthologous genes in lyrata 
+```{r}
+# Read orthology table
+mn47_orthologous_genes_table <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_athal_31lyr/MN47_85_90.cnt")
+# Get sequences coordinates
+mn47_orthologous_genes_coordinates <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_athal_31lyr/MN47_85_90.table", header=T)
+# Select necessary columns
+mn47_orthologous_genes_coordinates <- mn47_orthologous_genes_coordinates %>% select(sequence,beg.genome,end.genome,genome.chr)
+write.table(mn47_orthologous_genes_coordinates, "/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/lyrata_vs_thaliana_tair10_all_orhtologous_genes.csv", quote = F, row.names = F)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

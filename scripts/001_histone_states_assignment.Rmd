@@ -27,7 +27,7 @@ colnames(chromosome_length) <-c("length_chrom", "chrom")
 ## Attach chromosome length to the histone state
 chromatin_states <- merge(chromatin_states, chromosome_length, by=c("chrom"))
 # Write length of the chromosomes
-write.csv2(chromosome_length, "/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", quote = F, row.names = F)
+#write.csv2(chromosome_length, "/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", quote = F, row.names = F)
 ```
 # Assign merged chromatin state (based on figure 1 Shukla 2026)
 ```{r}
@@ -46,8 +46,8 @@ chromatin_states <- chromatin_states %>%
 ```
 # Define a sliding window
 ```{r}
-window_size <- 300000
-step_size   <- 100000
+window_size <- 50000
+step_size   <- window_size
 
 calc_window_stats <- function(df, window_size, step_size) {
   results <- list()
@@ -64,7 +64,7 @@ calc_window_stats <- function(df, window_size, step_size) {
       if (nrow(overlap) == 0) next
       results[[length(results) + 1]] <- overlap %>%
         group_by(merged_state, color) %>%
-        summarise(bp = sum(clipped_len), .groups = "drop") %>%
+        dplyr::summarise(bp = sum(clipped_len), .groups = "drop") %>%
         mutate(
           pct          = (bp / (we - ws)) * 100,
           chrom        = chr,
@@ -77,7 +77,18 @@ calc_window_stats <- function(df, window_size, step_size) {
 }
 
 window_results <- calc_window_stats(chromatin_states, window_size, step_size)
+
+## Report only unque state for non-sliding windows
+window_results_dominant <- window_results %>%
+  group_by(chrom, window_start, window_end) %>%
+  slice_max(pct, n = 1, with_ties = FALSE) %>%
+  ungroup()
 ```
+# Write df of the histone states
+```{r}
+write.csv2(window_results_dominant,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows_50kb_not_sliding.csv", quote = F, row.names = F)
+```
+
 # Plot
 ```{r}
 library(ggplot2)
@@ -94,14 +105,28 @@ output_path <- "/groups/nordborg/projects/genome_organization/manuscript/04_outp
 # Open Cairo SVG device
 CairoPNG(
   file   = file.path(output_path, "chromatin_states_plot.png"),
-  width  = 4800,   
-  height = 6000,   
-  dpi    = 600
+  width  = 5500,   
+  height = 3500,   
+  dpi    = 600,
+  pointsize = 9
 )
+
+
+centromeres <- read.table('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_naish_2021_science.txt',header=T)
+
+#Add NA to the centromere boundaries
+#window_results <- window_results %>%
+#  dplyr::mutate(chrom = as.character(chrom)) %>%
+#  dplyr::left_join(centromeres %>% mutate(chrom = as.character(chrom)), by = "chrom") %>%
+#  dplyr::mutate(
+#    bp  = ifelse(window_start >= start & window_start <= stop, NA, bp),
+#    pct = ifelse(window_start >= start & window_start <= stop, NA, pct)
+#  ) %>%
+#  dplyr::select(-start, -stop)  # optionally drop centromere boundary columns
 
 # Your plot
 ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)) +
-  geom_bar(stat = "identity", position = "stack", width = 0.1, color = "white", linewidth = 0.1) +
+  geom_bar(stat = "identity", position = "stack", width = 0.15, color = "white", linewidth = 0.1) +
   scale_fill_manual(values = color_map) +
   facet_wrap(~ chrom, ncol = 1, scales = "free") +
   labs(
@@ -109,7 +134,7 @@ ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)
     y    = "% of window",
     fill = "Chromatin state"
   ) +
-  theme_minimal(base_size = 15) +
+  theme_minimal(base_size = 12) +
   theme(
     legend.position = "right"
   ) +
@@ -119,10 +144,5 @@ ggplot(window_results, aes(x = window_start / 1e6, y = pct, fill = merged_state)
 # Close device
 dev.off()
 ```
-# Write df of the histone states
-```{r}
-write.table(window_results,"/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv", quote = F, row.names = F)
-```
-
 
 

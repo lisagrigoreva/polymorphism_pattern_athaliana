@@ -1,0 +1,334 @@
+---
+title: "mutation_rate_reanalysis"
+output: html_document
+date: "2025-11-27"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+mutation_unique <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/mutation_rate_thaliana/Unique_mutations.csv", sep=",", header=T)
+mutation_shared <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/mutation_rate_thaliana/Shared_mutations.csv", sep=",", header=T)
+
+## Read orthologous genes
+pannagram_1_1_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/coordinates_without_genes.csv", header=T, sep=",")
+## Attach thaliana start and end
+genes_athaliana <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")  %>% filter(V3=="gene")
+genes_athaliana$gene_id <- sub(".*ID=([^;]+);.*", "\\1", genes_athaliana$V9)
+genes_athaliana[, gene_id_clean := sub("Parent=([^.]+)\\..*", "\\1", gene_id)]
+genes_athaliana <- genes_athaliana %>% dplyr::select(V1,V4,V5,gene_id_clean)
+colnames(genes_athaliana) <- c("chr_thal", "star_thal", "end_thal", "gene_id_thal")
+## Connect coordinates to genes 
+pannagram_1_1_genes <- inner_join(pannagram_1_1_genes,genes_athaliana, by=c("sequence"="gene_id_thal"))
+# Get necessary columns
+pannagram_1_1_genes <- pannagram_1_1_genes %>% dplyr::select(sequence,chr_thal,star_thal,end_thal)
+```
+## Reproduce paper result
+```{r}
+# Get all unique MA lines that appear anywhere in mutation_shared
+shared_lines <- unique(c(
+  mutation_shared$MA_Line1,
+  mutation_shared$MA_Line2,
+  mutation_shared$MA_Line3,
+  mutation_shared$MA_Line4
+))
+
+shared_lines <- shared_lines[!is.na(shared_lines)]
+## Exclude shared lines
+mutation_unique_clean <- mutation_unique %>%
+  filter(!MA_Line %in% shared_lines)
+# Filter out mutation shared by multiple lines
+mutation_shared_many_lines <-mutation_shared[mutation_shared$MA_Line1=="shared_by_56_lines" |mutation_shared$MA_Line1=="shared_by_15_lines", ]
+# Remove mutations shared by many lines
+mutation_unique_clean <- mutation_unique %>%
+  filter(!(paste(CHROM, POS) %in% paste(mutation_shared_many_lines$CHROM, mutation_shared_many_lines$POS)))
+# Check remaining lines
+mutation_unique_clean <- mutation_unique_clean %>%
+  filter(!MA_Line %in% shared_mutation_lines)
+
+# Filter only single mutation
+mutation_unique_clean <-mutation_unique_clean[mutation_unique_clean$Type=="SNM",]
+
+```
+
+```{r}
+# Count unique SNMs per region
+# Heterochormatin defined peri-centromeres
+peri_centromeres <- data.frame(
+  chromosome   = c("Chr1", "Chr2", "Chr3", "Chr4", "Chr5"),
+  start = c(8500000, 0, 9250000, 1000000, 8500000),
+  end   = c(24500000, 10500000, 17250000, 11000000, 18000000)
+)
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_wlodzimierz2023.txt',header=T, sep="\t")
+centromeres$start <- as.numeric(centromeres$start)
+centromeres$stop <-as.numeric(centromeres$stop)
+centromeres$chromosome <- paste0("Chr", centromeres$chrom)
+
+## Exclude centromeres from peri-centromeres 
+peri_only <- peri_centromeres %>%
+  left_join(centromeres %>% dplyr::select(chromosome, start_cen = start, end_cen = stop), 
+            by = "chromosome") %>%
+  dplyr::mutate(
+    # pericentromeric region has two parts: left and right of centromere
+    left_bp  = pmax(0, start_cen - start),
+    right_bp = pmax(0, end - end_cen),
+    peri_bp  = left_bp + right_bp,
+    cen_bp   = end_cen - start_cen,
+    callable_peri = peri_bp * 0.93,
+    callable_cen  = cen_bp * 0.93
+  )
+
+peri_only
+
+# Calculate callable sites 
+total_callable_peri <- sum(peri_only$callable_peri)
+total_callable_cen  <- sum(peri_only$callable_cen)
+
+total_callable_peri
+total_callable_cen
+# Get chromosome length 
+chromosome_length <-read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/chrom_length.csv", sep=";", header=T)
+# Add chromosome column to match
+chromosome_length <- chromosome_length %>%
+  mutate(chromosome = paste0("Chr", chrom))
+# Calculate arm callable sites
+arms <- chromosome_length %>%
+  left_join(peri_centromeres %>% dplyr::select(chromosome, peri_start = start, peri_end = end),
+            by = "chromosome") %>%
+  mutate(
+    arm_bp       = length_chrom - (peri_end - peri_start),  # total chr minus peri-centromeric region
+    callable_arm = arm_bp * 0.93
+  )
+
+arms
+total_callable_arms <- sum(arms$callable_arm)
+total_callable_arms
+```
+## Calculate mutation rate everywhere (genes+TEs)
+```{r}
+#mutation_unique_clean$TAIR_ID %in% pannagram_1_1_genes$thaliana_id
+n_lines <- n_distinct(mutation_unique_clean$MA_Line)
+generations <- 25
+
+# Count SNMs per region
+snm_peri <- mutation_unique_clean %>%
+  filter(Chromosome_region == "pericentromeric") %>%
+  nrow()
+snm_cen <- mutation_unique_clean %>%
+  filter(Chromosome_region == "centromere") %>%
+  nrow()
+snm_arms <- mutation_unique_clean %>%
+  filter(Chromosome_region == "chromosome-arm") %>%
+  nrow()
+
+snm_peri; snm_cen; snm_arms
+
+# Mutation rates
+mutation_rate_peri <- snm_peri / (n_lines * generations * total_callable_peri)
+mutation_rate_cen  <- snm_cen  / (n_lines * generations * total_callable_cen)
+mutation_rate_arms <- snm_arms / (n_lines * generations * total_callable_arms)
+
+mutation_rate_peri
+mutation_rate_cen
+mutation_rate_arms
+
+mutation_rate_peri/mutation_rate_arms
+
+# Visualize with poisson test
+mut <- tribble(
+  ~region,          ~snm,      ~callable,
+  "Chromosome arms", snm_arms, total_callable_arms,
+  "Pericentromere",  snm_peri, total_callable_peri,
+  "Centromere",      snm_cen,  total_callable_cen
+) %>%
+  mutate(
+    denom = n_lines * generations * callable,
+    rate  = snm / denom,
+    lo    = sapply(snm, function(x) poisson.test(x)$conf.int[1]) / denom,
+    hi    = sapply(snm, function(x) poisson.test(x)$conf.int[2]) / denom,
+    region = factor(region,
+             levels = c("Chromosome arms", "Pericentromere", "Centromere"))
+  )
+# plot
+ggplot(mut, aes(x = region, y = rate, color = region)) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15, linewidth = 0.7) +
+  geom_point(size = 4) +
+  scale_color_manual(values = c("Chromosome arms" = "#d1e5f0",
+                                "Pericentromere"  = "#f4a582",
+                                "Centromere"      = "#b2182b")) +
+  labs(x = NULL, y = "Mutation rate (per site per generation)") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none")
+```
+
+
+## Calculate mutation rate in orthologous genes 
+
+```{r}
+# Assign gene to be in peri-centromere or arm 
+# Assign each gene to pericentromeric or arm region
+pannagram_1_1_genes <- pannagram_1_1_genes %>%
+  left_join(peri_centromeres %>% dplyr::select(chromosome, peri_start = start, peri_end = end),
+            by = c("chr_thal" = "chromosome")) %>%
+  mutate(
+    region = case_when(
+      star_thal >= peri_start & end_thal <= peri_end ~ "pericentromeric",
+      TRUE ~ "arm"
+    )
+  )
+
+# Calculate callable sites per gene
+pannagram_1_1_genes <- pannagram_1_1_genes %>%
+  mutate(
+    gene_length    = end_thal - star_thal,
+    callable_sites = gene_length * 0.93
+  )
+callable_by_region <- pannagram_1_1_genes %>%
+  group_by(region) %>%
+  dplyr::summarise(
+    n_genes         = n(),
+    total_callable  = sum(callable_sites),
+    .groups = "drop"
+  )
+
+```
+
+```{r}
+# Filter mutations to those in orthologous genes
+mutation_ortho <- mutation_unique_clean %>%
+  filter(TAIR_ID %in% pannagram_1_1_genes$sequence) %>%
+  left_join(pannagram_1_1_genes %>% dplyr::select(sequence, region),
+            by = c("TAIR_ID" = "sequence"))
+
+# Count SNMs per region
+snm_ortho_peri <- sum(mutation_ortho$region == "pericentromeric", na.rm = TRUE)
+snm_ortho_arm  <- sum(mutation_ortho$region == "arm", na.rm = TRUE)
+
+# Callable sites per region (from orthologous genes only)
+callable_ortho_peri <- callable_by_region %>% filter(region == "pericentromeric") %>% pull(total_callable)
+callable_ortho_arm  <- callable_by_region %>% filter(region == "arm")             %>% pull(total_callable)
+
+# Mutation rates
+mut_rate_ortho_peri <- snm_ortho_peri / (n_lines * generations * callable_ortho_peri)
+mut_rate_ortho_arm  <- snm_ortho_arm  / (n_lines * generations * callable_ortho_arm)
+
+mut_rate_ortho_peri/mut_rate_ortho_arm
+```
+
+```{r}
+# Plot mutations in orthologous genes
+mut_ortho <- tribble(
+  ~region,           ~snm,            ~callable,
+  "Chromosome arms", snm_ortho_arm,   callable_ortho_arm,
+  "Pericentromere",  snm_ortho_peri,  callable_ortho_peri
+) %>%
+  mutate(
+    denom = n_lines * generations * callable,
+    rate  = snm / denom,
+    lo    = sapply(snm, function(x) poisson.test(x)$conf.int[1]) / denom,
+    hi    = sapply(snm, function(x) poisson.test(x)$conf.int[2]) / denom,
+    region = factor(region, levels = c("Chromosome arms", "Pericentromere"))
+  )
+
+ggplot(mut_ortho, aes(x = region, y = rate, color = region)) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15, linewidth = 0.7) +
+  geom_point(size = 4) +
+  scale_color_manual(values = c("Chromosome arms" = "#d1e5f0",
+                                "Pericentromere"  = "#67001f")) +
+  labs(x = NULL, y = "Mutation rate (per site per generation)") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none")
+```
+## Combined plot of mutation rate 
+```{r}
+# Combine into one dataset
+mut <- tribble(
+  ~region,          ~snm,      ~callable,
+  "Chromosome arms", snm_arms, total_callable_arms,
+  "Pericentromere",  snm_peri, total_callable_peri
+) %>%
+  mutate(dataset = "Whole genome")
+mut_ortho <- tribble(
+  ~region,           ~snm,           ~callable,
+  "Chromosome arms", snm_ortho_arm,  callable_ortho_arm,
+  "Pericentromere",  snm_ortho_peri, callable_ortho_peri
+) %>%
+  mutate(dataset = "Orthologous genes")
+# Combine
+mut_combined <- bind_rows(mut, mut_ortho) %>%
+  mutate(
+    denom  = n_lines * generations * callable,
+    rate   = snm / denom,
+    lo     = sapply(snm, function(x) poisson.test(x)$conf.int[1]) / denom,
+    hi     = sapply(snm, function(x) poisson.test(x)$conf.int[2]) / denom,
+    region = factor(region, levels = c("Chromosome arms", "Pericentromere")),
+    dataset = factor(dataset, levels = c("Whole genome", "Orthologous genes"))
+  )
+# Plot
+ggplot(mut_combined, aes(x = region, y = rate, color = dataset)) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15, linewidth = 0.7,
+                position = position_dodge(width = 0.4)) +
+  geom_point(size = 4, position = position_dodge(width = 0.4)) +
+  scale_color_manual(values = c("Whole genome"      = "#4d4d4d",
+                                "Orthologous genes" = "#d6604d")) +
+  labs(x = NULL, y = "Mutation rate (per site per generation)", color = NULL) +
+  theme_bw(base_size = 16) +
+  theme(legend.position = "top")
+```
+
+
+```{r}
+library(dplyr)
+# Significance level
+stars <- function(p) as.character(cut(p, c(-Inf, 0.001, 0.01, 0.05, Inf),
+                                      labels = c("***", "**", "*", "NS")))
+
+test_dataset <- function(ds) {
+  d    <- mut_combined %>% filter(dataset == ds)
+  arm  <- d %>% filter(region == "Chromosome arms")
+  peri <- d %>% filter(region == "Pericentromere")
+  poisson.test(c(arm$snm, peri$snm), c(arm$denom, peri$denom))$p.value
+}
+
+sig <- mut_combined %>%
+  filter(region == "Chromosome arms") %>%    
+  group_by(dataset) %>%
+  dplyr::summarise(y = mean(rate), .groups = "drop") %>%
+  mutate(
+    p     = sapply(as.character(dataset), test_dataset),
+    label = stars(p),
+    x     = 0.7                         
+  )
+pd <- position_dodge(width = 0.3)
+mutation_rate <- ggplot(mut_combined, aes(x = region, y = rate, color = dataset, group = dataset)) +
+  geom_line(position = pd, linewidth = 0.6, alpha = 0.6) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15, linewidth = 0.7, position = pd) +
+  geom_point(size = 16, position = pd) +
+  geom_text(data = sig, inherit.aes = FALSE,
+            aes(x = x, y = y, label = label),
+            size = 12, color = "black") +
+  scale_color_manual(values = c("Whole genome" = "#4d4d4d",
+                                "Orthologous genes" = "#d6604d")) +
+  scale_x_discrete(labels = c("Chromosome arms" = "Arm"),
+                   expand = expansion(add = c(0.6, 0.3))) +   # room on the left
+  scale_y_continuous(labels = function(x) x / 1e-9) +
+  labs(x = NULL,
+       y = expression("Mutation rate (" * 10^-9 * ")"),
+       color = NULL) +
+  theme_bw(base_size = 36) +
+  theme(legend.position = "top")
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/mutation_rate_analysis.png",
+       plot = mutation_rate,
+       width = 300, height = 250, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+
+
+
+
+

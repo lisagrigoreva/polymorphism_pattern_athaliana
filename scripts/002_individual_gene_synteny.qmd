@@ -11,7 +11,7 @@ We test the hypothesis that single-gene nucleotide diversity adapts to the local
 
 We align 31 *A.lyrata* genomes and 27 *A.thaliana* genomes to their corresponding reference genomes (MN47 and TAIR10) using pannagram. We estimate diversity in 4fold (synonymous) sites.
 
-Ortholgous genes calculated by running simsearch in pannagram between TAIR10 and MN47. Genes with \>85% identity were considered as syntenic.
+Ortholgous genes calculated by running simsearch in pannagram between TAIR10 and MN47. Genes with \>85% identity were considered as syntenic in their sequence .
 
 ## Calculate how many genes moved together
 
@@ -23,9 +23,14 @@ library(dplyr)
 library(stringr)
 library(ggplot2)
 # Read pannagram genes
-pannagram_1_1_genes <- read.table("/groups/nordborg/projects/genome_organization/01_data/tair10/1_1_orth_genes_pannagram.txt", header=T)
+pannagram_1_1_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/lyata_mn47_v2_thaliana_tair10_only_unique_thal_lyr.csv", header=T)
+## Ad thaliana chromosome
+result_clean$thaliana_chr <- sub("AT([0-9]+)G.*", "\\1", result_clean$thaliana_id)
+## Attach thaliana start and end
+genes_athaliana <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")  %>% filter(V3=="gene")
+
 # Select necessary columns 
-pannagram_1_1_genes <- pannagram_1_1_genes %>% dplyr::select(chrom_thal,gene_thal,start_thal,end_thal,start_lyr,end_lyr,chrom_lyr)
+pannagram_1_1_genes <- pannagram_1_1_genes %>% dplyr::select(thaliana_chr,thaliana_id,start_thal,end_thal,start_lyr,end_lyr,chrom_lyr)
 ```
 
 ## Dotplot for transposed genes for all chromosomes

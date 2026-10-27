@@ -1,0 +1,127 @@
+---
+title: "dnds"
+output: html_document
+date: "2026-09-11"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+```
+
+```{r}
+dnds_table <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/dnds_thaliana/Athaliana_terminal_dN_dS_omega_with_positions.tsv", header=T)
+# Read centromeres
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_wlodzimierz2023.txt',header=T, sep="\t")
+```
+## Make figure per window 
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# --- Step 1: Bin per-gene omega into 300 kb windows ---
+dnds_windowed <- dnds_table %>%
+  filter(omega <= 1) %>%                          # remove outliers
+  mutate(window_start = floor(start / 3e5) * 3e5,
+         window_end   = window_start + 3e5) %>%
+  group_by(chromosome, window_start, window_end) %>%
+  summarise(avg_omega = mean(omega, na.rm = TRUE), .groups = "drop")
+
+# --- Step 2: Rename centromere column to match dnds_windowed ---
+centromeres_renamed <- centromeres %>%
+  rename(chromosome = chrom)
+
+# --- Step 3: Join centromeres, mask centromeric windows, compute ribbon ---
+# --- Updated Step 3: no ±250000 buffer ---
+dnds_all <- dnds_windowed %>%
+  left_join(centromeres_renamed %>% select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(avg_omega = ifelse(window_start <= centr_stop &
+                            window_end   >= centr_start,
+                            NA, avg_omega)) %>%       # mask exactly the centromere
+  group_by(chromosome) %>%
+  mutate(
+    med_omega = median(avg_omega, na.rm = TRUE),
+    above     = ifelse(avg_omega >= med_omega, avg_omega, med_omega),
+    region    = case_when(
+      window_end   < centr_start ~ "left",            # strictly left of centromere
+      window_start > centr_stop  ~ "right",           # strictly right of centromere
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup()
+
+# --- Step 4: Plot ---
+p <- ggplot(dnds_all, aes(x = window_start / 1e6, y = avg_omega)) +
+  geom_ribbon(aes(ymin = med_omega, ymax = above),
+              fill = "#053061", alpha = 0.3, na.rm = TRUE) +
+  geom_smooth(data = dnds_all %>% filter(region == "left"),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = dnds_all %>% filter(region == "right"),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  geom_point(size = 0.8, color = "#053061", alpha = 0.5, na.rm = TRUE) +
+  geom_hline(aes(yintercept = med_omega), linetype = "dashed",
+             color = "black", linewidth = 0.5) +
+  geom_rect(data = centromeres_renamed,
+            aes(xmin = (start ) / 1e6,
+                xmax = (stop  ) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.5) +
+  scale_y_continuous() +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)", y = expression(dN/dS)) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p
+
+# --- Step 5: Save ---
+ggsave("dnds_all_chromosomes.png",
+       plot = p,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       bg = "white")
+```
+```{r}
+# --- Step 3: with ±250000 buffer (exactly like the π plot) ---
+dnds_all <- dnds_windowed %>%
+  left_join(centromeres_renamed %>% select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(avg_omega = ifelse(window_start <= centr_stop  + 250000 &
+                            window_end   >= centr_start - 250000,
+                            NA, avg_omega)) %>%
+  group_by(chromosome) %>%
+  mutate(
+    med_omega = median(avg_omega, na.rm = TRUE),
+    above     = ifelse(avg_omega >= med_omega, avg_omega, med_omega),
+    region    = case_when(
+      window_end   < centr_start - 250000 ~ "left",
+      window_start > centr_stop  + 250000 ~ "right",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup()
+
+# --- Plot (exactly the π style) ---
+p <- ggplot(dnds_all, aes(x = window_start / 1e6, y = avg_omega)) +
+  geom_smooth(data = dnds_all %>% filter(region == "left"),
+              method = "loess", span = 0.2, color = "#f4a582", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = dnds_all %>% filter(region == "right"),
+              method = "loess", span = 0.2, color = "#f4a582", se = FALSE, na.rm = TRUE) +
+  geom_point(size = 0.8, na.rm = TRUE, color = "#f4a582", alpha = 0.5) +
+  geom_hline(aes(yintercept = med_omega), linetype = "dashed",
+             color = "black", linewidth = 0.5) +
+  geom_rect(data = centromeres_renamed,
+            aes(xmin = (start - 250000) / 1e6,
+                xmax = (stop  + 250000) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.5) +
+  scale_y_continuous() +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)", y = expression(dN/dS)) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p
+```
+
+

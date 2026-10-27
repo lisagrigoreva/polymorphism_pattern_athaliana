@@ -1,0 +1,168 @@
+---
+title: "background_selection_figure"
+output: html_document
+date: "2026-07-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Load data
+```{r cars}
+background_selection <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/background_selection_model/diversity_chr1-5_100000_relative_observed_predicted.tsv", header=T)
+```
+##
+```{r}
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_wlodzimierz2023.txt',header=T, sep="\t")
+centromeres$start <- as.numeric(centromeres$start)
+centromeres$stop <-as.numeric(centromeres$stop)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# --- format data ---
+bs_plot <- background_selection %>%
+  mutate(
+    chromosome = sub("^chr", "Chr", as.character(chrom)),
+    window_mid = (win_start + win_end) / 2
+  )
+
+cent_plot <- centromeres %>%
+  mutate(chromosome = as.character(chrom))
+
+# long-like table without tidyr
+obs_df <- bs_plot %>%
+  transmute(chromosome, window_mid, value = pi_obs_rel, metric = "Observed")
+
+pred_df <- bs_plot %>%
+  transmute(chromosome, window_mid, value = pi_pred_rel, metric = "Predicted")
+
+plot_df <- bind_rows(obs_df, pred_df)
+
+# --- plot ---
+ggplot(plot_df, aes(x = window_mid / 1e6, y = value)) +
+  geom_rect(
+    data = cent_plot,
+    aes(
+      xmin = (start - 250000) / 1e6,
+      xmax = (stop + 250000) / 1e6,
+      ymin = -Inf, ymax = Inf
+    ),
+    inherit.aes = FALSE, fill = "darkgrey", alpha = 0.5
+  ) +
+  geom_smooth(
+    data = subset(plot_df, metric == "Observed"),
+    method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE
+  ) +
+  geom_smooth(
+    data = subset(plot_df, metric == "Predicted"),
+    method = "loess", span = 0.2, color = "#5aae61", se = FALSE, na.rm = TRUE
+  ) +
+  geom_point(
+    data = subset(plot_df, metric == "Observed"),
+    size = 0.8, color = "#053061", alpha = 0.3, na.rm = TRUE
+  ) +
+  geom_point(
+    data = subset(plot_df, metric == "Predicted"),
+    size = 0.8, color = "#5aae61", alpha = 0.3, na.rm = TRUE
+  ) +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)", y = expression(pi[rel])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# --- format data ---
+bs_plot <- background_selection %>%
+  mutate(
+    chromosome = paste0("Chr", sub("^chr", "", as.character(chrom))),  # chr1 -> Chr1
+    chr_num = as.integer(sub("^Chr", "", chromosome)),
+    window_mid = (win_start + win_end) / 2
+  )
+
+cent_plot <- centromeres %>%
+  mutate(
+    chromosome = paste0("Chr", as.character(chrom)),                    # 1 -> Chr1
+    chr_num = as.integer(chrom)
+  )
+
+# keep chromosome order Chr1..ChrN
+chr_levels <- bs_plot %>%
+  distinct(chromosome, chr_num) %>%
+  arrange(chr_num) %>%
+  pull(chromosome)
+
+bs_plot$chromosome <- factor(bs_plot$chromosome, levels = chr_levels)
+cent_plot$chromosome <- factor(cent_plot$chromosome, levels = chr_levels)
+
+# long-like table without tidyr
+obs_df <- bs_plot %>%
+  transmute(chromosome, window_mid, value = pi_obs_rel, metric = "pi_rel")
+
+pred_df <- bs_plot %>%
+  transmute(chromosome, window_mid, value = pi_pred_rel, metric = "pi_predicted")
+
+plot_df <- bind_rows(obs_df, pred_df)
+
+# colors (colorblind-friendly)
+col_obs  <- "#053061"  # blue
+col_pred <- "#5aae61"  # orange
+
+observed_vs_predited_pi <- ggplot(plot_df, aes(x = window_mid / 1e6, y = value, color = metric)) +
+  geom_rect(
+    data = cent_plot,
+    aes(
+      xmin = (start) / 1e6,
+      xmax = (stop) / 1e6,
+      ymin = -Inf, ymax = Inf
+    ),
+    inherit.aes = FALSE,
+    fill = "darkgrey", alpha = 0.5
+  ) +
+  geom_smooth(method = "loess", span = 0.2, se = FALSE, na.rm = TRUE, linewidth = 0.9) +
+  geom_point(size = 0.8, alpha = 0.3, na.rm = TRUE) +
+  scale_color_manual(
+    values = c("pi_rel" = col_obs, "pi_predicted" = col_pred),
+    labels = c("pi_rel" = expression(pi[rel]), "pi_predicted" = expression(pi[predicted])),
+    name = NULL
+  ) +
+  scale_y_continuous(
+    name = expression(pi[rel]),
+    sec.axis = sec_axis(~ ., name = expression(pi[predicted]))
+  ) +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)") +
+  theme_bw(base_size = 20) +
+  theme(
+    strip.background = element_blank(),
+    axis.title.y.left = element_text(color = col_obs),
+    axis.title.y.right = element_text(color = col_pred),
+    legend.position = "top"
+  )
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/observed_vs_predited_pi.png",
+       plot = observed_vs_predited_pi,
+       width = 320, height = 120, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+
+```{r}
+# make sure columns are numeric
+background_selection$pi_obs_rel  <- as.numeric(background_selection$pi_obs_rel)
+background_selection$pi_pred_rel <- as.numeric(background_selection$pi_pred_rel)
+
+# linear model: observed ~ predicted
+fit <- lm(pi_obs_rel ~ pi_pred_rel, data = background_selection)
+
+summary(fit)$r.squared      # R^2
+summary(fit)$adj.r.squared  # adjusted R^2
+```
+
+

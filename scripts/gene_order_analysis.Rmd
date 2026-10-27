@@ -1,0 +1,284 @@
+---
+title: "gene_order_analysis"
+output: html_document
+date: "2026-06-01"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+```
+# Define peri-cenrtomeric genes based on the histone states
+```{r}
+chromatin_states <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows.csv")
+# Mark peri-centromeric regions
+peri_centromeres_chromatin <- chromatin_states[chromatin_states$merged_state=="CH" & chromatin_states$pct > 20 ,]
+# Define the same windows in gff file
+annotation_athaliana <- fread("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/genes.bed",header=FALSE, select = c(1,2,3,4))
+setnames(annotation_athaliana, c("chr", "start", "end", "gene"))
+# Match genes to the windows
+peri_centromeres_chromatin <- as.data.table(peri_centromeres_chromatin)
+peri_centromeres_chromatin[, chr := paste0("Chr", chrom)]
+pc_genes <- peri_centromeres_chromatin[peri_centromeres_chromatin$merged_state=="CH",]
+```
+
+## Get genes 1-1 orthology in A.lyrata and C. rubella
+```{r}
+## ## ## ## ## ## ## ## 
+## Capsella processing ## 
+## ## ## ## ## ## ## ## 
+capsella_gff <- fread("/groups/nordborg/projects/genome_organization/manuscript/01_data/c_rubella/Crubella_474_v1.1.gene.gff3", skip = 2, sep = "\t", header = FALSE)
+## Set names 
+setnames(capsella_gff, c("chr", "source", "type", "start", "end", "score", "strand", "phase", "attributes"))
+# Filter only gene rows
+capsella_genes <- capsella_gff[type == "gene", .(chr, start, end, attributes)]
+# Get the name 
+capsella_genes[, gene_id := sub(".*ID=([^;]+).*", "\\1", attributes)]
+capsella_genes[, gene_clean := sub("\\.v[0-9.]+$", "", gene_id)] 
+
+## ## ## ## ## ## ## ## 
+## Lyrata processing ## 
+## ## ## ## ## ## ## ## 
+
+lyrata_gff <- fread("/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/8_longest_scaffolds.gtf", skip = 2, sep = "\t", header = FALSE)
+## Set names 
+setnames(lyrata_gff, c("chr", "source", "type", "start", "end", "score", "strand", "phase", "attributes"))
+# Filter only gene rows
+lyrata_genes <- lyrata_gff[type == "gene", .(chr, start, end, attributes)]
+# Get the name 
+lyrata_genes[, gene_id := sub(".*ID=([^;]+).*", "\\1", attributes)]
+lyrata_genes[, gene_clean := sub("\\.v[0-9.]+$", "", gene_id)] 
+lyrata_genes[, gene_clean := sub('.*locus_tag "([^"]+)".*', '\\1', gene_clean)]
+lyrata_genes <- lyrata_genes %>% select(chr,start,end,gene_clean)
+```
+## Process single copy orthologous genes 
+```{r}
+# Load the full Orthogroups file
+og_full <- fread("/groups/nordborg/projects/genome_organization/manuscript/03_processing/orthofinder_tair10_mn47_arenosa_capsella/OrthoFinder/Results_May12/Orthogroups/Orthogroups.tsv")
+
+# Load the list of Single Copy Orthogroup IDs
+sc_ids <- fread("/groups/nordborg/projects/genome_organization/manuscript/03_processing/orthofinder_tair10_mn47_arenosa_capsella/OrthoFinder/Results_May12/Orthogroups/Orthogroups_SingleCopyOrthologues.txt", header = FALSE)$V1
+
+# Filter the full table to keep only 1-1 orthologous sequences
+og_sc <- og_full[Orthogroup %in% sc_ids]
+og_sc <- og_sc %>% select(Orthogroup,Athaliana_167_protein_primaryTranscriptOnly, Crubella_474_v1.1.protein_primaryTranscriptOnly,GCA_944990045.1_MN47_v2_primaryTranscriptOnly)
+```
+## Join thaliana, capsella, lyrata 
+```{r}
+## Join dataframes and mark if the gene is single-copy orthologous 
+## Attach thaliana coordinates
+og_sc$athal_gene <- gsub("\\..*", "", og_sc$Athaliana_167_protein_primaryTranscriptOnly)
+og_sc$alyr_gene <- og_sc$GCA_944990045.1_MN47_v2_primaryTranscriptOnly
+og_sc$capsella_gene <- og_sc$Crubella_474_v1.1.protein_primaryTranscriptOnly
+og_sc$capsella_gene <- gsub("(\\.\\w+)\\..*", "\\1", og_sc$capsella_gene)
+# Select necessary columns
+og_sc <- og_sc %>% select(Orthogroup,athal_gene,alyr_gene,capsella_gene)
+
+## Add coordinates thaliana
+og_sc_athal <- left_join(
+  og_sc,
+  annotation_athaliana %>% rename_with(~ paste0(., "_athal"), -gene),
+  by = c("athal_gene" = "gene")
+)
+
+## Add coordinates lyrata
+og_sc_athal_lyr <- left_join(
+  og_sc_athal,
+  lyrata_genes %>% rename_with(~ paste0(., "_alyr"), -gene_clean),
+  by = c("alyr_gene" = "gene_clean")
+)
+
+## Add coordinates capsella
+capsella_genes <- capsella_genes %>% select(chr,start,end,gene_clean)
+
+og_sc_athal_lyr_capsella <- left_join(
+  og_sc_athal_lyr,
+  capsella_genes %>% rename_with(~ paste0(., "_capsella"), -gene_clean),
+  by = c("capsella_gene" = "gene_clean")
+)
+```
+## Visualization of the alignment 
+```{r}
+# Filter genes to be out of peri-centromere
+library(data.table)
+
+# Your annotation (A. thaliana genes)
+# annotation_athaliana should have: chr, start, end, gene
+
+# Overlap genes with pericentromere windows
+pc_gene_ids <- annotation_athaliana[
+  pc_genes[, .(chr, window_start, window_end)],
+  on = .(chr, start >= window_start, end <= window_end),
+  nomatch = 0
+]$gene
+
+# Now filter og_sc table
+non_pc <- og_sc_athal_lyr_capsella[!athal_gene %in% pc_gene_ids]
+pc     <- og_sc_athal_lyr_capsella[ athal_gene %in% pc_gene_ids]
+```
+
+
+```{r}
+# Rank by A. thaliana position
+non_pc <- non_pc[order(chr_athal, start_athal)]
+non_pc[, rank_Ath := 1:.N]
+
+# Rank by Capsella position
+non_pc <- non_pc[order(chr_capsella, start_capsella)]
+non_pc[, rank_Cap := 1:.N]
+
+# Rank by Lyrata position
+non_pc <- non_pc[order(chr_alyr, start_alyr)]
+non_pc[, rank_Lyr := 1:.N]
+```
+
+```{r}
+library(ggplot2)
+library(patchwork)
+
+non_pc$chr_athal <- factor(non_pc$chr_athal, levels = c("Chr1","Chr2","Chr3","Chr4","Chr5"))
+
+# Ath vs Capsella
+non_pc <- na.omit(non_pc)
+ggplot(non_pc, aes(x = rank_Ath, y = rank_Cap, color = chr_athal)) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_color_brewer(palette = "Set1", name = "Chr (Ath)") +
+  labs(x = "Rank in A. thaliana", y = "Rank in Capsella",
+       title = "Non-pericentromeric: Ath vs Capsella") +
+  theme_minimal()
+
+# Ath vs Lyrata
+ggplot(non_pc, aes(x = rank_Ath, y = rank_Lyr, color = chr_athal)) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_color_brewer(palette = "Set1", name = "Chr (Ath)") +
+  labs(x = "Rank in A. thaliana", y = "Rank in A. lyrata",
+       title = "Non-pericentromeric: Ath vs Alyr") +
+  theme_minimal()
+
+```
+## Define off diagonal points. Genes where the linear oderd in A thaliana but differ from capsella
+```{r}
+library(data.table)
+
+# Sort by Ath rank
+setorder(non_pc, rank_Ath)
+
+# Calculate rank difference from diagonal
+non_pc[, rank_diff := rank_Ath - rank_Cap]
+
+# A gene is part of a block if its rank_diff is similar to its neighbors
+non_pc[, diff_prev := abs(rank_diff - shift(rank_diff, 1))]
+non_pc[, diff_next := abs(rank_diff - shift(rank_diff, -1))]
+
+# "Single dot" = both neighbors have very different rank_diff
+# i.e., it is NOT part of a consecutive run
+block_threshold <- 100  # adjust based on your data density
+
+non_pc[, is_single := (is.na(diff_prev) | diff_prev > block_threshold) & 
+                      (is.na(diff_next) | diff_next > block_threshold)]
+
+cat("Number of single off-diagonal genes:", sum(non_pc$is_single))
+```
+## Check exon-intron structure
+```{r}
+ggplot(non_pc, aes(x = rank_Ath, y = rank_Cap, color = chr_athal)) +
+  geom_point(data = non_pc[is_single == FALSE], size = 1.2, alpha = 0.4) +
+  geom_point(data = non_pc[is_single == TRUE], size = 2.5, alpha = 1, shape = 17) +  # triangles for singles
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_color_brewer(palette = "Set1", name = "Chr (Ath)") +
+  labs(x = "Rank in A. thaliana", y = "Rank in Capsella",
+       title = "Non-pericentromeric: Ath vs Capsella\n(triangles = moved genes)") +
+  theme_minimal()
+```
+## Check exon-intron structure in Arabidopsis 
+```{r}
+single_moved_genes <- non_pc[non_pc$is_single=="TRUE",]
+
+athaliana_gff <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")
+ath_genes_gff <- athaliana_gff[V3 == "gene" |V3 == "transposable_element_gene"]
+ath_genes_gff[, gene_id := sub(".*ID=([^;]+).*", "\\1", V9)]
+## Map to the genes 
+single_moved_genes_mapped <- inner_join(single_moved_genes,ath_genes_gff, by=c("athal_gene"="gene_id"))
+## Check presene of introns
+```
+
+```{r}
+# Extract exons for moved genes only
+ath_exons <- athaliana_gff[V3 == "exon"]
+ath_exons[, gene_id := sub(".*Parent=([^.]+).*", "\\1", V9)]
+
+# Count exons per gene → introns = exons - 1
+gene_structure <- ath_exons[gene_id %in% single_moved_genes$athal_gene,
+                             .(n_exons = .N), by = gene_id]
+gene_structure[, n_introns := n_exons - 1]
+gene_structure[, has_intron := n_introns > 0]
+
+head(gene_structure)
+gene_structure[gene_structure$n_introns>1,]
+```
+
+```{r}
+```
+
+
+
+
+##OLD##
+
+
+## Capsella thaliana make a dotplot
+```{r}
+# Sort by A. thaliana position
+pc_with_capsella <- as.data.table(pc_with_capsella)
+pc_with_capsella <- pc_with_capsella[order(chr_Ath, start_Ath)]
+pc_with_capsella[, rank_Ath := 1:.N]
+
+# Sort by Capsella position
+pc_with_capsella <- pc_with_capsella[order(chr_cap, start_cap)]
+pc_with_capsella[, rank_Cap := 1:.N]
+```
+
+```{r}
+library(ggplot2)
+
+# factor and optional palette
+pc_with_capsella$chr_Ath <- factor(pc_with_capsella$chr_Ath,
+                                   levels = unique(pc_with_capsella$chr_Ath))
+
+# Set ordered chromosome levels
+pc_with_capsella$chr_Ath <- factor(pc_with_capsella$chr_Ath, levels = c("Chr1", "Chr2", "Chr3", "Chr4", "Chr5"))
+
+# Plot with facets
+library(ggplot2)
+
+ggplot(pc_with_capsella, aes(x = rank_Ath, y = rank_Cap, color = chr_Ath)) +
+  geom_point(size = 1.8, alpha = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_color_brewer(palette = "Set1", name = "A. thaliana\nchromosome") +
+  labs(x = "Rank in A. thaliana (pericentromeric)",
+       y = "Rank in Capsella",
+       title = "A. thaliana VS C. rubella") +
+  facet_wrap(~ chr_Ath, scales = "free") +
+  theme_minimal()
+```
+## Add A. lyrata
+```{r}
+# Load Capsella GFF
+lyrata_gff <- fread("/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/Phytozome/PhytozomeV12/Alyrata/annotation/Alyrata_384_v2.1.gene.gff3", skip = 2, sep = "\t", header = FALSE)
+setnames(lyrata_gff, c("seqid","source","type","start","end","score","strand","phase","attributes"))
+
+# keep only gene lines and extract ID
+al_genes <- lyrata_gff[type == "gene", .(seqid, start, end, attributes)]
+al_genes[, gene_id := sub(".*ID=([^;]+).*", "\\1", attributes)]
+al_genes[, gene_id := as.character(gene_id)]
+# optional: drop the attributes column
+al_genes <- al_genes[, .(seqid, start, end, gene_id)]
+```
+
+
+
+
+
+
