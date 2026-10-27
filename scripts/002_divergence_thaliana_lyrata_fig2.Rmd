@@ -1,0 +1,313 @@
+---
+title: "002_divergence"
+output: html_document
+date: "2025-09-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Read libraries
+
+```{r}
+library(ggplot2)
+library(data.table)
+library(tidyr)
+library(stringr)
+```
+## Read diversity 
+```{r}
+pi_4fold_lyr_pi <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_thaliana_27g_lyrata_31g/thaliana_lyrata_diversity_divergence_4fold_sites_pi.txt", header=T, sep='\t')
+pi_4fold_lyr_pi <-pi_4fold_lyr_pi[pi_4fold_lyr_pi$pop=="POP1",]
+pi_4fold_lyr_dxy <- read.table("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/pi_thaliana_27g_lyrata_31g/thaliana_lyrata_diversity_divergence_4fold_sites_dxy.txt", header=T, sep='\t')
+## Read centromere informtaion
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/01_data/tair10/centr_bound.txt',header=T, sep=",")
+```
+## Calculate average divergence 
+```{r}
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/01_data/tair10/centr_bound.txt',header=T, sep=",")
+chromosome_lengths <- data.frame(
+  chromosome = c("Chr1", "Chr2", "Chr3", "Chr4", "Chr5"),
+  Golden_path_length = c("30427671", "19698289", "23459830", "18585056", "26975502")
+)
+# Calculate  500 KB widnows 
+calc_window <- function(data) {
+   data <- data %>%
+     mutate(
+       window_start = (window_pos_1 %/% 500000) * 500000 + 1,
+       window_end = window_start + 499999
+     )
+   return(data)  # Explicitly return the modified data
+}
+
+# Function to average pi to the windows 
+average_pi <- function(data){
+  data <-data %>% group_by(chromosome, window_start, window_end) %>% dplyr::summarise(avg_pi_window = sum((count_diffs)) / sum(count_comparisons))
+  return(data)
+}
+# Function to calculate gene density
+calc_gene_density <- function(data) {
+  data <- data %>%
+    group_by(chromosome, window_start, window_end) %>%
+    dplyr::summarise(gene_count = n())
+  return(data)
+}
+```
+
+```{r}
+# Calculate windows 
+pi_4fold_lyr <- calc_window(pi_4fold_lyr_pi)
+dxy_4fold_lyr <- calc_window(pi_4fold_lyr_dxy)
+# Get average pi and dxy 
+pi_4fold_lyr <- average_pi(pi_4fold_lyr)
+dxy_4fold_lyr <- average_pi(dxy_4fold_lyr)
+```
+
+
+```{r}
+avg_pi_with_dxy <- inner_join(pi_4fold_lyr,dxy_4fold_lyr, by=c("chromosome", "window_start", "window_end"), suffix=c("_pi","_dxy"))
+
+generate_windows <- function(chromosome, length) {
+  tibble(
+    chromosome = chromosome,
+    window_start = seq(1, length, by = 500000),
+    window_end = (window_start + 500000 - 1))}
+# Apply this function to each chromosome to create a complete set of expected windows
+expected_windows <- chromosome_lengths %>%
+  rowwise() %>%
+  do(generate_windows(.$chromosome, .$Golden_path_length)) %>%
+  ungroup()
+
+# Impute windows which are not in the data (to have 0)
+data_full_range <- expected_windows %>%
+  full_join(avg_pi_with_dxy, by = c("chromosome", "window_start", "window_end")) 
+
+# Merge with centromere
+data_full_range <- merge(data_full_range, centromeres, by="chromosome")
+
+# Make everything in centromere 0
+# Adjust pi values if window falls within the centromere range
+data_full_range <- data_full_range %>% dplyr::mutate(avg_pi_window_dxy = ifelse(window_end >= start & window_start <= stop, 0, avg_pi_window_dxy))
+data_full_range <- data_full_range %>% dplyr::mutate(avg_pi_window_pi = ifelse(window_end >= start & window_start <= stop, 0, avg_pi_window_pi))
+
+#data_full_range <- data_full_range %>% dplyr::mutate(avg_pi_window_pi = ifelse(window_end >= ancestral_start & window_start <= ancestral_stop, 0, avg_pi_window_pi))
+#data_full_range <- data_full_range %>% dplyr::mutate(avg_pi_window_dxy = ifelse(window_end >= ancestral_start & window_start <= ancestral_stop, 0, avg_pi_window_dxy))
+```
+
+```{r}
+median_pi <- median(data_full_range$avg_pi_window_pi, na.rm = TRUE)
+median_dxy <- median(data_full_range$avg_pi_window_dxy, na.rm = TRUE) 
+
+# Reshape to long format
+pi_long <- data_full_range %>%
+  pivot_longer(
+    cols = c(avg_pi_window_pi, avg_pi_window_dxy),
+    names_to = "metric",
+    values_to = "measure"
+  ) %>%
+  mutate(
+    metric = case_when(
+      metric == "avg_pi_window_pi" ~ "Diversity (π)",
+      metric == "avg_pi_window_dxy" ~ "Divergence (dxy)"
+    ),
+    median_value = case_when(
+      metric == "Diversity (π)" ~ median_pi,
+      metric == "Divergence (dxy)" ~ median_dxy
+    )
+  )
+```
+## Visualize figure 2 
+```{r}
+pi_long <- pi_long %>%
+  mutate(
+    metric = factor(metric, levels = c("Diversity (π)", "Divergence (dxy)"))
+  )
+
+
+ggplot(pi_long, aes(x = window_start, y = measure, color = metric)) +
+  geom_smooth(method = "loess", se = TRUE, size = 1, alpha = 0.6, span = 0.2,fill = "#C9CDCF") +
+    geom_point(size = 1.3, alpha = 0.9) +
+ # geom_line()+
+  geom_hline(aes(yintercept = median_value, color = "darkgrey"), 
+             linetype = "dashed", size = 0.6, alpha = 0.9)+
+  facet_grid(metric ~ chromosome, scales = "free") +
+  scale_color_manual(values = c(
+    "Diversity (π)" = "#004030",
+    "Divergence (dxy)" = "#B9375D"
+  )) +
+ # geom_rect(
+#    data = data_full_range ,
+#    aes(xmin = start - 150000, xmax = stop + 150000, ymin = -Inf, ymax = Inf), 
+#    fill = "lightgrey", alpha = 0.3, inherit.aes = FALSE
+#  ) +
+  theme_minimal(base_size = 20) +
+  theme(
+    panel.spacing.x = unit(0, "lines"), 
+    panel.spacing.y = unit(0, "lines"),
+    legend.position = "none"
+  ) +
+  xlab("Window Start (Mbp)") +
+  scale_x_continuous(labels = label_number(scale = 1e-6))
+
+width_inches <- 12
+height_inches <- 8
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/04_figures/only_diversity_all_context_figure1_patterns_separately.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(plot1)
+dev.off()
+```
+
+## Make a boxplot of divergence
+```{r}
+data_full_range$pericentromere_start <- data_full_range$start-3000000
+data_full_range$pericentromere_stop <- data_full_range$stop+3000000
+
+data_full_range$location <- ifelse(data_full_range$window_start>=data_full_range$pericentromere_start & data_full_range$window_end<=data_full_range$pericentromere_stop, "pericentromere", "arm")
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+
+# Wilcoxon tests for each chromosome
+results <- data.frame()
+
+for(chr in unique(data_full_range$chromosome)) {
+  data_chr <- subset(data_full_range, chromosome == chr)
+  
+  # PI test
+  pi_test <- wilcox.test(avg_pi_window_pi ~ location, data = data_chr)
+  results <- rbind(results, data.frame(chr = chr, metric = "PI", p_value = pi_test$p.value))
+  
+  # DXY test  
+  dxy_test <- wilcox.test(avg_pi_window_dxy ~ location, data = data_chr)
+  results <- rbind(results, data.frame(chr = chr, metric = "DXY", p_value = dxy_test$p.value))
+}
+
+print(results)
+
+# Custom colors
+my_colors <- c("arm" = "#EE7600", "pericentromere" = "#1C86EE")  # blue and red
+# Or try: c("arm" = "lightblue", "pericentromere" = "coral")
+# Or: c("arm" = "#2ecc71", "pericentromere" = "#f39c12")  # green and orange
+
+# Boxplots with custom colors
+p1 <- ggplot(data_full_range, aes(x = chromosome, y = avg_pi_window_pi, fill = location)) +
+  geom_boxplot() + 
+  geom_jitter(position = position_jitterdodge()) + 
+  ggtitle("PI") +
+  scale_fill_manual(values = my_colors) +
+  stat_compare_means(aes(group = location), method = "wilcox.test", 
+                     label = "p.signif", hide.ns = FALSE) +ylab("Pi")+theme_minimal()
+
+p2 <- ggplot(data_full_range, aes(x = chromosome, y = avg_pi_window_dxy, fill = location)) +
+  geom_boxplot() + 
+  geom_jitter(position = position_jitterdodge()) + 
+  ggtitle("DXY") +
+  scale_fill_manual(values = my_colors) +
+  stat_compare_means(aes(group = location), method = "wilcox.test", 
+                     label = "p.signif", hide.ns = FALSE)+ylab("Dxy")+theme_minimal()
+
+print(p1)
+print(p2)
+```
+
+## Make a scatterplot 
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1) Keep only the two metrics of interest and pivot wider
+pi_wide <- pi_long %>%
+  select(chromosome, window_start, window_end, metric, measure) %>%
+  distinct() %>%  # guard against duplicates per window/metric
+  pivot_wider(
+    names_from = metric,
+    values_from = measure
+  ) 
+
+# 2) Basic scatterplot
+pi_wide <-pi_wide[pi_wide$`Diversity (π)`>0 & pi_wide$`Divergence (dxy)`>0,]
+library(ggplot2)
+
+ggplot(pi_wide, aes(x = `Diversity (π)`, y = `Divergence (dxy)`, color = `Diversity (π)`)) +
+  geom_point(alpha = 0.6, size=4) +
+  scale_color_viridis_c(option = "plasma") +  # or "magma", "viridis", etc.
+  theme_minimal(base_size = 20) +
+  labs(
+    x = "Diversity (π)",
+    y = "Divergence (dxy)",
+    title = "Diversity vs Divergence per genomic window",
+    color = "Diversity (π)"
+  ) +
+  facet_wrap(~ chromosome, nrow = 3)
+```
+
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# Ensure chromosome ordering (adjust levels to match your data order if needed)
+library(dplyr)
+library(ggplot2)
+library(scales)
+# scales >= 1.2.0
+
+# Ensure chromosome order
+chr_levels <- c("Chr1","Chr2","Chr3","Chr4","Chr5")  # extend if needed
+pi_wide <- pi_wide %>%
+  mutate(chromosome = factor(chromosome, levels = chr_levels))
+
+# Chromosome sizes and cumulative offsets
+chr_sizes <- pi_wide %>%
+  group_by(chromosome) %>%
+  dplyr::summarise(chr_len = max(window_end, na.rm = TRUE), .groups = "drop") %>%
+  mutate(offset = lag(cumsum(chr_len), default = 0))
+
+pi_wide_cum <- pi_wide %>%
+  left_join(chr_sizes, by = "chromosome") %>%
+  mutate(x_cum = offset + window_start)
+
+# Midpoints for labels
+chr_ticks <- chr_sizes %>%
+  mutate(x_start = offset,
+         x_end = offset + chr_len,
+         x_mid = (x_start + x_end)/2)
+
+ggplot(pi_wide_cum,
+       aes(x = x_cum,
+           y = `Divergence (dxy)`,
+           color = `Diversity (π)`)) +
+  geom_point(alpha = 0.7, size = 1.4) + geom_smooth()+
+  geom_vline(data = chr_sizes, aes(xintercept = offset), color = "grey85") +
+  scale_color_viridis_c(option = "plasma") +
+  scale_x_continuous(
+    breaks = chr_ticks$x_mid,
+    labels = as.character(chr_ticks$chromosome),
+    expand = expansion(mult = c(0.005, 0.02))
+  ) +
+  labs(
+    x = "Chromosome",
+    y = "Divergence (dxy)",
+    color = "Diversity (π)",
+    title = "Divergence vs cumulative genomic position (colored by Diversity)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_blank())
+```
+
+
+
+
+
+

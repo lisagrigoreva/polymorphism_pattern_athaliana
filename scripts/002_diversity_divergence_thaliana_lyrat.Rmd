@@ -1,0 +1,748 @@
+---
+title: "002_diversity_divergence_thaliana_lyrata"
+output: html_document
+date: "2024-03-26"
+---
+
+```{r}
+#Load libraries 
+library(plyr)
+library(data.table, quietly = T)
+library(tools, quietly = T)
+library(stringdist, quietly = T)
+library(scales, quietly = T)
+library(ggplot2, quietly = T)
+library(dplyr, quietly = T)
+library(gridExtra, quietly = T)
+library(ggpubr)
+library(tidyr)
+```
+
+```{r}
+##Read Pi in thaliana 
+pi_4fold_thal <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_diversity_thaliana/4fol_sites_thal_27g_tair10_based_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+##Read Pi in lyrata 
+pi4_fold_lyrata <-  read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_divergence_diversity_thal_lyr/4fol_sites_lyr_31g_tair10_based_pi.txt", header=T, sep='\t')
+## Select lyrata 
+pi4_fold_lyrata <- pi4_fold_lyrata[pi4_fold_lyrata$pop=="LYR",] %>% na.omit()
+##Read divergence 
+pi4_fold_lyrata_thaliana_divergence <-  read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_divergence_diversity_thal_lyr/4fol_sites_lyr_31g_tair10_based_dxy.txt", header=T, sep='\t') %>% na.omit()
+```
+## Calculate pi and dxy in windows 
+```{r}
+## Read centromeres 
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_wlodzimierz2023.txt',header=T, sep="\t")
+centromeres$start <- as.numeric(centromeres$start)
+centromeres$stop <-as.numeric(centromeres$stop)
+centromeres <- centromeres %>% mutate(chromosome = paste0("Chr", chrom))
+## Add peri-centromeres defined based on the heterochtomatin 
+peri.centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows_500kb_250kb_sliding.csv',header=T, sep=";")
+
+## Function to calculate windows 
+calc_window <- function(data, window_size = 500000, step_size = 250000) {
+  chromosomes <- unique(data$chromosome)
+  results <- list()
+  for (chr in chromosomes) {
+    chr_data <- data %>% filter(chromosome == chr)
+    max_pos  <- max(chr_data$window_pos_2, na.rm = TRUE)
+    starts <- seq(1, max_pos, by = step_size)
+    for (ws in starts) {
+      we <- ws + window_size - 1
+      overlap <- chr_data %>% filter(window_pos_1 <= we & window_pos_2 >= ws)
+      if (nrow(overlap) == 0) next
+      results[[length(results) + 1]] <- overlap %>%
+        mutate(window_start = ws, window_end = we)
+    }
+  }
+  bind_rows(results)
+}
+
+# Calculate average pi/dxy
+average_pi <- function(data) {
+  data %>%
+    group_by(chromosome, window_start, window_end) %>%
+    dplyr::summarise(
+      avg_pi_window = sum(count_diffs) / sum(count_comparisons),
+      .groups = "drop"
+    )
+}
+```
+## Apply pi/dxy calculation in sliding windows  
+```{r}
+pi_4fold_thal <- pi_4fold_thal %>% calc_window() %>% average_pi()
+pi_4fold_thal <- pi_4fold_thal %>%
+  dplyr::rename( avg_pi_window_thaliana=avg_pi_window)
+
+pi4_fold_lyrata <- pi4_fold_lyrata %>% calc_window() %>% average_pi()
+pi4_fold_lyrata <- pi4_fold_lyrata %>%
+  dplyr::rename(avg_pi_window_lyrata=avg_pi_window)
+
+pi4_fold_lyrata_thaliana_divergence <- pi4_fold_lyrata_thaliana_divergence %>% calc_window() %>% average_pi()
+pi4_fold_lyrata_thaliana_divergence <- pi4_fold_lyrata_thaliana_divergence %>%
+  dplyr::rename(avg_dxy = avg_pi_window)
+
+## Combine dxy, pi in thaliana and pi il lyrata together 
+combined_diversity_divergence <- pi_4fold_thal %>%
+  inner_join(pi4_fold_lyrata, by = c("chromosome", "window_start", "window_end")) %>%
+  inner_join(pi4_fold_lyrata_thaliana_divergence, by = c("chromosome", "window_start", "window_end"))
+
+#write.csv2(combined_diversity_divergence, "/groups/nordborg/projects/genome_organization/manuscript/04_output/001_figure_with_all_estimates/diversity_divergence.csv", quote = F, row.names = F)
+```
+## Pi in thaliana & lyrata 
+```{r}
+# scaling factor to align the two y axes
+scale_factor <- mean(combined_diversity_divergence$avg_pi_window_thaliana, na.rm = TRUE) /
+                mean(combined_diversity_divergence$avg_pi_window_lyrata, na.rm = TRUE)
+
+
+# mask centromere region for Chr1
+div_all <- combined_diversity_divergence %>%
+  #filter(chromosome == "Chr1") %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(
+    avg_pi_window_thaliana = ifelse(window_start <= centr_stop  + 250000 &
+                                    window_end   >= centr_start - 250000,
+                                    NA, avg_pi_window_thaliana),
+    avg_pi_window_lyrata   = ifelse(window_start <= centr_stop  + 250000 &
+                                    window_end   >= centr_start - 250000,
+                                    NA, avg_pi_window_lyrata),
+    region = case_when(
+      window_end   < centr_start - 250000 ~ "left",
+      window_start > centr_stop  + 250000 ~ "right",
+      TRUE ~ NA_character_
+    ),
+    med_thal  = median(avg_pi_window_thaliana, na.rm = TRUE),
+    above_thal = ifelse(avg_pi_window_thaliana >= med_thal, avg_pi_window_thaliana, med_thal),
+    med_lyr   = median(avg_pi_window_lyrata, na.rm = TRUE) * scale_factor,
+    above_lyr  = ifelse(avg_pi_window_lyrata * scale_factor >= med_lyr,
+                        avg_pi_window_lyrata * scale_factor, med_lyr)
+  )
+
+chr1_centromere <- centromeres %>% filter(chromosome == "Chr1")
+
+p <- ggplot(div_all, aes(x = window_start / 1e6)) +
+  geom_rect(data = centromeres,
+            aes(xmin = (start - 250000) / 1e6, xmax = (stop + 250000) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.3) +
+  # thaliana ribbon + points + smooth
+  geom_ribbon(aes(ymin = med_thal, ymax = above_thal), fill = "#053061", alpha = 0.3, na.rm = TRUE) +
+  geom_hline(aes(yintercept = med_thal), linetype = "dashed", color = "#053061", linewidth = 0.5) +
+  geom_point(aes(y = avg_pi_window_thaliana), size = 0.8, color = "#053061", na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "left"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "right"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  # lyrata ribbon + points + smooth
+  geom_ribbon(aes(ymin = med_lyr, ymax = above_lyr), fill = "#d6604d", alpha = 0.3, na.rm = TRUE) +
+  geom_hline(aes(yintercept = med_lyr), linetype = "dashed", color = "#d6604d", linewidth = 0.5) +
+  geom_point(aes(y = avg_pi_window_lyrata * scale_factor), size = 0.8, color = "#d6604d", na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "left"),
+              aes(y = avg_pi_window_lyrata * scale_factor),
+              method = "loess", span = 0.2, color = "#d6604d", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "right"),
+              aes(y = avg_pi_window_lyrata * scale_factor),
+              method = "loess", span = 0.2, color = "#d6604d", se = FALSE, na.rm = TRUE) +
+  scale_y_continuous(
+    name = expression(pi ~ "thaliana"),
+    labels = function(x) format(x, scientific = FALSE),
+    sec.axis = sec_axis(~ . / scale_factor,
+                        name = expression(pi ~ "lyrata"),
+                        labels = function(x) format(x, scientific = FALSE))
+  ) +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)") +
+  theme_bw(base_size = 16) +
+  theme(
+    strip.background = element_blank(),
+    axis.title.y.left  = element_text(color = "#053061"),
+    axis.text.y.left   = element_text(color = "#053061"),
+    axis.title.y.right = element_text(color = "#d6604d"),
+    axis.text.y.right  = element_text(color = "#d6604d")
+  )
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_thal_lyrata_all_chr.png",
+       plot = p,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+## Marking region of frigida gene 
+```{r}
+div_all <- combined_diversity_divergence %>%
+  filter(chromosome %in% c("Chr4", "Chr5")) %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(
+    avg_pi_window_thaliana = ifelse(
+      window_start <= centr_stop  + 250000 &
+      window_end   >= centr_start - 250000,
+      NA, avg_pi_window_thaliana
+    ),
+    region = case_when(
+      window_end   < centr_start - 250000 ~ "left",
+      window_start > centr_stop  + 250000 ~ "right",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(chromosome) %>%
+  mutate(
+    med_thal   = median(avg_pi_window_thaliana, na.rm = TRUE),
+    above_thal = ifelse(avg_pi_window_thaliana >= med_thal,
+                        avg_pi_window_thaliana, med_thal)
+  ) %>%
+  ungroup()
+
+# --- Reference data ---
+chr_centromeres <- centromeres %>%
+  filter(chromosome %in% c("Chr4", "Chr5"))
+
+# Per-chromosome medians for geom_hline in facets
+chr_medians <- div_all %>%
+  distinct(chromosome, med_thal)
+
+# Highlight regions (old = Chr5, new = Chr4)
+highlight_regions <- data.frame(
+  chromosome = c("Chr5", "Chr4"),
+  xmin       = c((20764315 - 1000000) / 1e6, max(0, 269026  - 1000000) / 1e6),
+  xmax       = c((20768681 + 1000000) / 1e6,     (271503   + 1000000) / 1e6),
+  label      = c("Old neighborhood", "New neighborhood")
+)
+
+p <- ggplot(div_all, aes(x = window_start / 1e6)) +
+  
+  # Centromere shading
+  geom_rect(data = chr_centromeres,
+            aes(xmin = (start - 250000) / 1e6, xmax = (stop + 250000) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.3) +
+  
+  # Neighborhood highlight regions
+  geom_rect(data = highlight_regions,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = label),
+            inherit.aes = FALSE, alpha = 0.25) +
+  scale_fill_manual(
+    name   = "Region",
+    values = c("Old neighborhood" = "#78A083", "New neighborhood" = "#FF653F")
+  ) +
+  
+  # Thaliana ribbon
+  geom_ribbon(aes(ymin = med_thal, ymax = above_thal),
+              fill = "#7288AE", alpha = 0.3, na.rm = TRUE) +
+  
+  # Median dashed line (per chromosome)
+  geom_hline(data = chr_medians,
+             aes(yintercept = med_thal),
+             linetype = "dashed", color = "#7288AE", linewidth = 0.5) +
+  
+  # Points
+  geom_point(aes(y = avg_pi_window_thaliana),
+             size = 0.8, color = "#7288AE", na.rm = TRUE) +
+  
+  # LOESS smooths — left and right of centromere separately
+  geom_smooth(data = div_all %>% filter(region == "left"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2,
+              color = "#7288AE", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "right"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2,
+              color = "#7288AE", se = FALSE, na.rm = TRUE) +
+  
+  facet_wrap(~ chromosome, scales = "free", ncol = 1) +
+  
+  scale_y_continuous(
+    name   = expression(pi ~ "thaliana"),
+    labels = function(x) format(x, scientific = FALSE)
+  ) +
+  labs(x = "Position (Mb)") +
+  theme_bw(base_size = 16) +
+  theme(
+    strip.background  = element_blank(),
+    strip.text        = element_text(face = "bold"),
+    axis.title.y.left = element_text(color = "#7288AE"),
+    axis.text.y.left  = element_text(color = "#7288AE"),
+    legend.position   = "top"
+  )
+
+p
+```
+
+## Diversity VS divergence 
+```{r}
+# Calculate scale factor 
+scale_factor <- mean(combined_diversity_divergence$avg_pi_window_thaliana, na.rm = TRUE) /
+                mean(combined_diversity_divergence$avg_dxy, na.rm = TRUE)
+
+div_all <- combined_diversity_divergence %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(
+    avg_pi_window_thaliana = ifelse(window_start <= centr_stop  + 250000 &
+                                    window_end   >= centr_start - 250000,
+                                    NA, avg_pi_window_thaliana),
+    avg_dxy                = ifelse(window_start <= centr_stop  + 250000 &
+                                    window_end   >= centr_start - 250000,
+                                    NA, avg_dxy),
+    region = case_when(
+      window_end   < centr_start - 250000 ~ "left",
+      window_start > centr_stop  + 250000 ~ "right",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(chromosome) %>%                       # <- per-chromosome medians
+  mutate(
+    med_thal   = median(avg_pi_window_thaliana, na.rm = TRUE),
+    above_thal = ifelse(avg_pi_window_thaliana >= med_thal, avg_pi_window_thaliana, med_thal),
+    med_lyr    = median(avg_dxy, na.rm = TRUE) * scale_factor,
+    above_lyr  = ifelse(avg_dxy * scale_factor >= med_lyr, avg_dxy * scale_factor, med_lyr)
+  ) %>%
+  ungroup
+
+p <- ggplot(div_all, aes(x = window_start / 1e6)) +
+  geom_rect(data = centromeres,                  # <- all centromeres
+            aes(xmin = (start - 250000) / 1e6, xmax = (stop + 250000) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.3) +
+  # thaliana ribbon + points + smooth
+  geom_ribbon(aes(ymin = med_thal, ymax = above_thal), fill = "#053061", alpha = 0.3, na.rm = TRUE) +
+  geom_hline(aes(yintercept = med_thal), linetype = "dashed", color = "#053061", linewidth = 0.5) +
+  geom_point(aes(y = avg_pi_window_thaliana), size = 0.8, color = "#053061", na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "left"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "right"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  # dxy ribbon + points + smooth
+  geom_ribbon(aes(ymin = med_lyr, ymax = above_lyr), fill = "#d6604d", alpha = 0.3, na.rm = TRUE) +
+  geom_hline(aes(yintercept = med_lyr), linetype = "dashed", color = "#d6604d", linewidth = 0.5) +
+  geom_point(aes(y = avg_dxy * scale_factor), size = 0.8, color = "#d6604d", na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "left"),
+              aes(y = avg_dxy * scale_factor),
+              method = "loess", span = 0.2, color = "#d6604d", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "right"),
+              aes(y = avg_dxy * scale_factor),
+              method = "loess", span = 0.2, color = "#d6604d", se = FALSE, na.rm = TRUE) +
+  scale_y_continuous(
+    name = expression(pi[thaliana]),
+    labels = function(x) format(x, scientific = FALSE),
+    sec.axis = sec_axis(~ . / scale_factor,
+                        name = expression(d[XY]),
+                        labels = function(x) format(x, scientific = FALSE))
+  ) +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +   # <- facet
+  labs(x = "Position (Mb)") +
+  theme_bw(base_size = 16) +
+  theme(
+    strip.background = element_blank(),
+    axis.title.y.left  = element_text(color = "#053061"),
+    axis.text.y.left   = element_text(color = "#053061"),
+    axis.title.y.right = element_text(color = "#d6604d"),
+    axis.text.y.right  = element_text(color = "#d6604d")
+  )
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_dxy_thal_lyrata_allchr.png",
+       plot = p,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+
+```
+## Add chromosome fusions(1-1 orthologous genes)
+```{r}
+pannagram_1_1_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/lyata_mn47_v2_thaliana_tair10_only_unique_thal_lyr.csv", header=T)
+## Attach thaliana start and end
+genes_athaliana <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")  %>% filter(V3=="gene")
+genes_athaliana$gene_id <- sub(".*ID=([^;]+);.*", "\\1", genes_athaliana$V9)
+genes_athaliana[, gene_id_clean := sub("Parent=([^.]+)\\..*", "\\1", gene_id)]
+genes_athaliana <- genes_athaliana %>% dplyr::select(V1,V4,V5,gene_id_clean)
+colnames(genes_athaliana) <- c("chr_thal", "star_thal", "end_thal", "gene_id_thal")
+## Connect coordinates to genes 
+pannagram_1_1_genes <- inner_join(pannagram_1_1_genes,genes_athaliana, by=c("thaliana_id"="gene_id_thal"))
+
+pannagram_1_1_genes$lyrata_chr <- case_when(
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000001.1" ~ "Chr1",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000112.1" ~ "Chr2",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000223.1" ~ "Chr3",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000334.1" ~ "Chr4",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000445.1" ~ "Chr5",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000556.1" ~ "Chr6",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000667.1" ~ "Chr7",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000762.1" ~ "Chr8",
+  TRUE ~ pannagram_1_1_genes$lyrata_chr)
+
+#write.csv2(pannagram_1_1_genes, "/groups/nordborg/projects/genome_organization/manuscript/04_output/001_figure_with_all_estimates/correspondance_thal_lyr_chromosomes.csv2", row.names = F, quote = F)
+pannagram_1_1_genes <- pannagram_1_1_genes[pannagram_1_1_genes$chr_thal=="Chr1",]
+pannagram_1_1_genes_chr1 <- pannagram_1_1_genes %>% dplyr::select(lyrata_chr,lyrata_start,lyrata_end,chr_thal,star_thal,end_thal)
+```
+
+```{r}
+pannagram_1_1_genes_chr1_filtered <- pannagram_1_1_genes_chr1 %>%
+  left_join(centromeres %>% select(chromosome, centr_start = start, centr_stop = stop),
+            by = c("chr_thal" = "chromosome")) %>%
+  filter(!(star_thal <= centr_stop + 250000 & end_thal >= centr_start - 250000))
+
+p <- ggplot(pannagram_1_1_genes_chr1_filtered %>% mutate(xmin = (star_thal - 500) / 1e6,
+                                                     xmax = (end_thal  + 500) / 1e6),
+       aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 1, fill = lyrata_chr)) +
+  geom_rect() +
+  facet_wrap(~ chr_thal, scales = "free_x", nrow = 1) +
+  labs(x = NULL, y = NULL) +
+  theme_bw(base_size = 16) +
+  theme(
+    strip.background = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid   = element_blank(),
+    aspect.ratio = 0.05,
+    legend.position = "none"
+  ) +
+  scale_fill_manual(values = c("Chr1" = "#7288AE", "Chr2" = "#EC6530"))
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/chr1_orthologous_gene_density.png",
+       plot = p,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+## Scatterplots all chromosomes together, colored by proximity to centromere
+```{r}
+# Prepare tables
+div_all <- combined_diversity_divergence %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(
+    avg_pi_window_thaliana = ifelse(window_start <= centr_stop  + 250000 &
+                                    window_end   >= centr_start - 250000,
+                                    NA, avg_pi_window_thaliana),
+    avg_pi_window_lyrata   = ifelse(window_start <= centr_stop  + 250000 &
+                                    window_end   >= centr_start - 250000,
+                                    NA, avg_pi_window_lyrata),
+    region = case_when(
+      window_end   < centr_start - 250000 ~ "left",
+      window_start > centr_stop  + 250000 ~ "right",
+      TRUE ~ NA_character_
+    ),
+    centr_mid = (centr_start + centr_stop) / 2,
+    dist_to_centromere = abs((window_start + window_end) / 2 - centr_mid) / 1e6
+  )
+
+```
+
+```{r}
+library(patchwork)
+
+# correlation labels
+cor1 <- cor(div_all$avg_pi_window_thaliana, div_all$avg_pi_window_lyrata, use = "complete.obs")
+cor2 <- cor(div_all$avg_pi_window_thaliana, div_all$avg_dxy,              use = "complete.obs")
+cor3 <- cor(div_all$avg_pi_window_lyrata,   div_all$avg_dxy,              use = "complete.obs")
+
+p1 <- ggplot(div_all, aes(avg_pi_window_thaliana, avg_pi_window_lyrata, color = dist_to_centromere)) +
+  geom_point(size = 1.5, na.rm = TRUE) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.6, na.rm = TRUE) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,
+           label = paste0("r = ", round(cor1, 2)), size = 5) +
+  scale_color_gradient(low = "#67001f", high = "#d1e5f0", name = "Distance to\ncentromere (Mb)") +
+  scale_x_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  labs(x = expression(pi[thaliana]), y = expression(pi[lyrata])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p2 <- ggplot(div_all, aes(avg_pi_window_thaliana, avg_dxy, color = dist_to_centromere)) +
+  geom_point(size = 1.5, na.rm = TRUE) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.6, na.rm = TRUE) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,
+           label = paste0("r = ", round(cor2, 2)), size = 5) +
+  scale_color_gradient(low = "#67001f", high = "#d1e5f0", name = "Distance to\ncentromere (Mb)") +
+  scale_x_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  labs(x = expression(pi[thaliana]), y = expression(d[XY])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p3 <- ggplot(div_all, aes(avg_pi_window_lyrata, avg_dxy, color = dist_to_centromere)) +
+  geom_point(size = 1.5, na.rm = TRUE) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.6, na.rm = TRUE) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,
+           label = paste0("r = ", round(cor3, 2)), size = 5) +
+  scale_color_gradient(low = "#67001f", high = "#d1e5f0", name = "Distance to\ncentromere (Mb)") +
+  scale_x_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  labs(x = expression(pi[lyrata]), y = expression(d[XY])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p4 <- p1 + p2 + p3 + plot_layout(ncol = 3, guides = "collect")
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/all_chr_dxy_pi_correlations.png",
+       plot = p4,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+## Scatterplot with slope 
+```{r}
+library(ggplot2)
+library(patchwork)
+get_stats <- function(data, x, y) {
+  d <- data[, c(x, y)]
+  d <- d[complete.cases(d), ]  # same rows used for cor + lm
+  fit <- lm(reformulate(x, y), data = d)
+
+  list(
+    r = cor(d[[x]], d[[y]]),
+    slope = unname(coef(fit)[2]),
+    intercept = unname(coef(fit)[1])
+  )
+}
+div_all <- div_all[div_all$avg_dxy>0.04,]
+s1 <- get_stats(div_all, "avg_pi_window_thaliana", "avg_pi_window_lyrata")
+s2 <- get_stats(div_all, "avg_pi_window_thaliana", "avg_dxy")
+s3 <- get_stats(div_all, "avg_pi_window_lyrata", "avg_dxy")
+
+p1 <- ggplot(div_all, aes(avg_pi_window_thaliana, avg_pi_window_lyrata, color = dist_to_centromere)) +
+  geom_point(size = 1.5, na.rm = TRUE) +
+  geom_abline(intercept = s1$intercept, slope = s1$slope, color = "black", linewidth = 0.6) +
+annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -0.5,
+           label = sprintf("r = %.3f\nβ = %.3f",round(s1$r , 2), s1$slope),
+           size = 5) +
+  scale_color_gradient(low = "#67001f", high = "#d1e5f0", name = "Distance to\ncentromere (Mb)") +
+  scale_x_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  labs(x = expression(pi[thaliana]), y = expression(pi[lyrata])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p2 <- ggplot(div_all, aes(avg_pi_window_thaliana, avg_dxy, color = dist_to_centromere)) +
+  geom_point(size = 1.5, na.rm = TRUE) +
+  geom_abline(intercept = s2$intercept, slope = s2$slope, color = "black", linewidth = 0.6) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -0.5,
+           label = sprintf("r = %.3f\nβ = %.3f",round(s2$r , 2), s2$slope),
+           size = 5) +
+  scale_color_gradient(low = "#67001f", high = "#d1e5f0", name = "Distance to\ncentromere (Mb)") +
+  scale_x_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  labs(x = expression(pi[thaliana]), y = expression(d[XY])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p3 <- ggplot(div_all, aes(avg_pi_window_lyrata, avg_dxy, color = dist_to_centromere)) +
+  geom_point(size = 1.5, na.rm = TRUE) +
+  geom_abline(intercept = s3$intercept, slope = round(s3$r , 2), color = "black", linewidth = 0.6) +
+annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -0.5,
+           label = sprintf("r = %.3f\nβ = %.3f", round(s3$r), s3$slope),
+           size = 5) +
+  scale_color_gradient(low = "#67001f", high = "#d1e5f0", name = "Distance to\ncentromere (Mb)") +
+  scale_x_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  labs(x = expression(pi[lyrata]), y = expression(d[XY])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+p4 <- p1 + p2 + p3 + plot_layout(ncol = 3, guides = "collect")
+p4
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/all_chr_dxy_pi_correlations_with_slope.png",
+       plot = p4,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+
+
+## Make boxplots peri-centromeres VS arms
+```{r}
+##Define peri-centromeres based on the heterochromatin 
+peri.centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/manuscript/04_output/001_chromatin_states/chromatin_states_in_windows_500kb_250kb_sliding.csv',header=T, sep=";")
+peri.centromeres <- peri.centromeres[peri.centromeres$merged_state=="CH" | peri.centromeres$merged_state=="FH",]
+
+
+peri.centromeres <- peri.centromeres[peri.centromeres$merged_state %in% c("CH", "FH"), ]
+
+ggplot(peri.centromeres, aes(x = pct, fill = merged_state)) +
+  geom_histogram(bins = 50, color = "white", position = "stack") +
+  geom_vline(xintercept = 10, linetype = "dashed", color = "red") +
+  scale_fill_manual(values = c("CH" = "#5C5470", "FH" = "#B09FCA"), name = "State") +
+  facet_wrap(~ chrom, scales = "free", nrow = 5) +
+  labs(x = "% heterochromatin", y = "Count") +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank())
+
+
+high_pct_windows <- peri.centromeres %>%
+  filter((merged_state == "CH" & pct > 10) | (merged_state == "FH" & pct > 25)) %>%
+  dplyr::select(chrom, window_start) %>%
+  distinct()
+
+peri_centromeres <- data.frame(
+  chromosome   = c("Chr1", "Chr2", "Chr3", "Chr4", "Chr5"),
+  start = c(8500000, 0, 9250000, 1000000, 8500000),
+  end   = c(24500000, 10500000, 17250000, 11000000, 18000000)
+)
+
+p <-peri.centromeres %>% 
+  filter(chrom == 1) %>% 
+  ggplot(aes(x = window_start / 1e6, y = pct, fill = merged_state)) +
+  geom_rect(data = peri_centromeres %>% filter(chromosome == "Chr1"),
+            aes(xmin = start / 1e6, xmax = end / 1e6,
+                ymin = 0, ymax = Inf),
+            inherit.aes = FALSE,
+            fill = "#161E54", alpha = 0.2) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = c("CH" = "#D55E00", "FH" = "#E69F00"), name = "State") +
+  labs(x = NULL, y = "% CH/FH") +
+  theme_bw(base_size = 9) +
+  theme(
+    strip.background = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/chromatin_states_chr1.png",
+       plot = p,
+       width = 250, height = 20, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+
+```
+## Define peri-centromere windows 
+```{r}
+peri_centromeres <- data.frame(
+  chromosome   = c("Chr1", "Chr2", "Chr3", "Chr4", "Chr5"),
+  start = c(8500000, 0, 9250000, 1000000, 8500000),
+  end   = c(24500000, 10500000, 17250000, 11000000, 18000000)
+)
+```
+## Diversity plot with peri-centromeres highlighting 
+```{r}
+div_all <- combined_diversity_divergence %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(
+    avg_pi_window_thaliana = ifelse(window_start <= centr_stop  + 250000 &
+                                    window_end   >= centr_start - 250000,
+                                    NA, avg_pi_window_thaliana),
+    region = case_when(
+      window_end   < centr_start - 250000 ~ "left",
+      window_start > centr_stop  + 250000 ~ "right",
+      TRUE ~ NA_character_
+    ),
+    med_thal   = median(avg_pi_window_thaliana, na.rm = TRUE),
+    above_thal = ifelse(avg_pi_window_thaliana >= med_thal, avg_pi_window_thaliana, med_thal)
+  )
+
+
+p <- ggplot(div_all, aes(x = window_start / 1e6)) +
+  # pericentromere highlight
+  geom_rect(data = peri_centromeres,
+            aes(xmin = start / 1e6, xmax = end / 1e6, ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "#D55E00", alpha = 0.15) +
+  # centromere highlight
+  geom_rect(data = centromeres,
+            aes(xmin = (start - 250000) / 1e6, xmax = (stop + 250000) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.3) +
+  # thaliana ribbon + points + smooth
+  geom_ribbon(aes(ymin = med_thal, ymax = above_thal), fill = "#7288AE", alpha = 0.3, na.rm = TRUE) +
+  geom_hline(aes(yintercept = med_thal), linetype = "dashed", color = "#7288AE", linewidth = 0.5) +
+  geom_point(aes(y = avg_pi_window_thaliana), size = 0.8, color = "#7288AE", na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "left"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2, color = "#7288AE", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = div_all %>% filter(region == "right"),
+              aes(y = avg_pi_window_thaliana),
+              method = "loess", span = 0.2, color = "#7288AE", se = FALSE, na.rm = TRUE) +
+  scale_y_continuous(
+    name = expression(pi[thaliana]),
+    labels = function(x) format(x, scientific = FALSE)
+  ) +
+  labs(x = "Position (Mb)") +
+  theme_bw(base_size = 16) +
+  theme(
+    strip.background = element_blank(),
+    axis.title.y = element_text(color = "#7288AE"),
+    axis.text.y  = element_text(color = "#7288AE")
+  ) + facet_wrap(~chromosome, scales="free", nrow=5)
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/peri_centromeres_all_chr_chromatin_defined.png",
+       plot = p,
+       width = 300, height = 200, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+## Make boxplots based on peri-centromeres and diversity
+```{r}
+div_regions <- combined_diversity_divergence %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  left_join(peri_centromeres %>% dplyr::select(chromosome, peri_start = start, peri_end = end),
+            by = "chromosome") %>%
+  filter(!(window_start <= centr_stop + 250000 & window_end >= centr_start - 250000)) %>%
+  mutate(
+    region = ifelse(window_start >= peri_start & window_end <= peri_end,
+                    "Pericentromere", "Arm")
+  ) %>%
+  dplyr::select(chromosome, window_start, window_end, region,
+         avg_pi_window_thaliana, avg_pi_window_lyrata, avg_dxy) %>%
+  pivot_longer(cols = c(avg_pi_window_thaliana, avg_pi_window_lyrata, avg_dxy),
+               names_to = "metric", values_to = "value") %>%
+  mutate(metric = recode(metric,
+                         "avg_pi_window_thaliana" = "pi[thaliana]",
+                         "avg_pi_window_lyrata"   = "pi[lyrata]",
+                         "avg_dxy"                = "d[XY]"))
+
+div_regions <- div_regions %>%
+  mutate(region = factor(region, levels = c("Pericentromere", "Arm")))
+
+
+library(ggsignif)
+
+
+wilcox_results <- div_regions %>%
+  group_by(metric) %>%
+  dplyr::summarise(
+    p = wilcox.test(value[region == "Pericentromere"],
+                    value[region == "Arm"])$p.value,
+    y_pos = max(value, na.rm = TRUE) * 1.05,
+    .groups = "drop"
+  ) %>%
+  mutate(label = case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE      ~ "ns"
+  ))
+
+p <- ggplot(div_regions %>% mutate(region = factor(region, levels = c("Pericentromere", "Arm"))),
+       aes(x = region, y = value, fill = region)) +
+  geom_violin(alpha = 0.6, na.rm = TRUE) +
+  geom_boxplot(width = 0.15, outlier.size = 0.5, fill = "white", alpha = 0.7, na.rm = TRUE) +
+  #geom_text(data = wilcox_results, aes(x = 1.5, y = y_pos, label = label),
+  #          inherit.aes = FALSE, size = 10) +
+  #geom_segment(data = wilcox_results, aes(x = 1, xend = 2, y = y_pos * 0.99, yend = y_pos * 0.99),
+   #            inherit.aes = FALSE) +
+  scale_fill_manual(values = c("Arm" = "#d1e5f0", "Pericentromere" = "#67001f")) +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  facet_wrap(~ metric, scales = "free_y", labeller = label_parsed) +
+  labs(x = NULL, y = "Diversity") +
+  theme_bw(base_size = 20) +
+ theme(strip.background = element_blank(),
+      strip.text = element_text(size = 24),
+      legend.position = "none")
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/peri_centromeres_vs_arms_wo_wilxoc_test.png",
+       plot = p,
+       width = 300, height = 150, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+## Variation of diversity explained by divergence
+```{r}
+m <- lm(avg_pi_window_thaliana ~ avg_dxy, data = div_all)
+summary(m)$r.squared        # proportion explained
+summary(m)$r.squared * 100  # as a percentage
+```
+
+
+
+
+
+
+

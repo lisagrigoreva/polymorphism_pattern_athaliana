@@ -1,0 +1,199 @@
+---
+title: "001_diversity_27_thalianas"
+output: html_document
+date: "2024-03-22"
+---
+
+# Upload packages 
+```{r setup, include=FALSE}
+library(data.table, quietly = T)
+library(stringdist, quietly = T)
+library(ggplot2, quietly = T)
+library(dplyr, quietly = T)
+library(gridExtra, quietly = T)
+library(ggpubr, quietly = T)
+library(cowplot, quietly = T)
+library(patchwork, quietly = T)
+library(Cairo, quietly = T)
+library(tidyr, quietly = T)
+library(broom, quietly = T)
+library(tools, quietly = T)
+```
+# Read data (diversity within A.thaliana)
+```{r}
+# Read data 
+# pi 4 fold in 1-1 orthologous genes 
+pi_4fold_thal <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_diversity_thaliana/4fol_sites_thal_27g_tair10_based_1to1_genes_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+```
+
+````{r}
+## Read centromeres 
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/centr_boundaries_wlodzimierz2023.txt',header=T, sep="\t")
+centromeres$start <- as.numeric(centromeres$start)
+centromeres$stop <-as.numeric(centromeres$stop)
+# Harmonize chrom naming
+centromeres <- centromeres %>% mutate(chromosome = paste0("Chr", chrom))
+
+# Calculate  500 KB widnows, 250 sliding 
+calc_window <- function(data, window_size = 500000, step_size = 250000) {
+  chromosomes <- unique(data$chromosome)
+  results <- list()
+  for (chr in chromosomes) {
+    chr_data <- data %>% filter(chromosome == chr)
+    max_pos  <- max(chr_data$window_pos_2, na.rm = TRUE)
+    starts <- seq(1, max_pos, by = step_size)
+    for (ws in starts) {
+      we <- ws + window_size - 1
+      overlap <- chr_data %>% filter(window_pos_1 <= we & window_pos_2 >= ws)
+      if (nrow(overlap) == 0) next
+      results[[length(results) + 1]] <- overlap %>%
+        mutate(window_start = ws, window_end = we)
+    }
+  }
+  bind_rows(results)
+}
+
+average_pi <- function(data) {
+  data %>%
+    group_by(chromosome, window_start, window_end) %>%
+    dplyr::summarise(
+      avg_pi_window = sum(count_diffs) / sum(count_comparisons),
+      .groups = "drop"
+    )}
+```
+## Calculate pi in sliding windows  
+```{r}
+pi_4fold_thal <- pi_4fold_thal %>% calc_window() %>% average_pi()
+
+write.csv2(pi_4fold_thal, "/groups/nordborg/projects/genome_organization/manuscript/04_output/002_diversity_thaliana/4fol_sites_thal_27g_tair10_based_1to1_genes_pi_500mbp_250_sliding_windows.txt", quote = F, row.names = F)
+```
+## Visualize with dark near centromeres 
+```{r}
+# Add ancestral centromere, chr1
+chr1_rect <- data.frame(
+  chromosome = "Chr1",
+  xmin = (22243240 - 1000000) / 1e6,
+  xmax = (22243240 + 1000000) / 1e6,
+  ancestral=TRUE
+)
+
+pi_all <- pi_4fold_thal %>%
+  pivot_longer(cols = avg_pi_window,
+               names_to = "pi_type", values_to = "avg_pi") %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(avg_pi = ifelse(window_start <= centr_stop + 250000 &
+                           window_end >= centr_start - 250000, NA, avg_pi)) %>%
+  group_by(chromosome) %>%
+  mutate(med_pi = median(avg_pi, na.rm = TRUE),
+         above  = ifelse(avg_pi >= med_pi, avg_pi, med_pi),
+         region = case_when(
+           window_end   < centr_start - 250000 ~ "left",
+           window_start > centr_stop  + 250000 ~ "right",
+           TRUE ~ NA_character_
+         )) %>%
+  ungroup()
+
+p <- ggplot(pi_all, aes(x = window_start / 1e6, y = avg_pi)) +
+  geom_ribbon(aes(ymin = med_pi, ymax = above), fill = "#053061", alpha = 0.3, na.rm = TRUE) +
+  geom_smooth(data = pi_all %>% filter(region == "left"),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = pi_all %>% filter(region == "right"),
+              method = "loess", span = 0.2, color = "#053061", se = FALSE, na.rm = TRUE) +
+  geom_point(size = 0.8, na.rm = TRUE, color = "#053061", alpha=0.5) +
+  geom_hline(aes(yintercept = med_pi), linetype = "dashed", color = "black", linewidth = 0.5) +
+  geom_rect(data = centromeres,
+            aes(xmin = (start - 250000) / 1e6, xmax = (stop + 250000) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.5) +
+  scale_y_continuous() +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)", y = expression(pi[4-fold])) +
+  theme_bw(base_size = 16) +
+  theme(strip.background = element_blank()) + geom_rect(data = chr1_rect,
+            aes(xmin = xmin, xmax = xmax),
+            ymin = -Inf, ymax = Inf,
+            inherit.aes = FALSE, fill = "#57595B", alpha = 0.6) 
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_all_chromosomes.png",
+       plot = p,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+# Visualize diversity for A. lyrata 
+```{r}
+# Read data 
+# pi 4 fold
+pi_4fold_lyrata <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_diversity_lyrata/4fol_sites_lyr_31g_mn47_based_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+```
+
+````{r}
+## Read centromeres 
+centromeres <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/centr_boundaries_wlodzimierz_2023.txt",header=T, sep="\t")
+centromeres$start <- as.numeric(centromeres$centr_start)
+centromeres$stop <-as.numeric(centromeres$centr_end)
+
+# Calculate  300 KB widnows 
+calc_window_not_sliding <- function(data) {
+   data <- data %>%
+     mutate(
+       window_start = (window_pos_1 %/% 500000) * 500000 + 1,
+       window_end = window_start + 250000
+     )
+   return(data)  # Explicitly return the modified data
+}
+
+# Function to average pi to the windows 
+average_pi <- function(data){
+  data <-data %>% group_by(chromosome, window_start, window_end) %>% dplyr::summarise(avg_pi_window = sum((count_diffs)) / sum(count_comparisons))
+  return(data)
+}
+```
+## Calculate pi in sliding windows  
+```{r}
+pi_4fold_lyrata <- pi_4fold_lyrata %>% calc_window() %>% average_pi()
+```
+##Plot
+```{r}
+# Harmonize chrom naming
+centromeres$chromosome <- centromeres$Chr
+```
+## Visualize with dark near centromeres 
+```{r}
+pi_lyrata <- pi_4fold_lyrata %>%
+  left_join(centromeres %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
+            by = "chromosome") %>%
+  mutate(avg_pi_window = ifelse(window_start <= centr_stop + 250000 &
+                           window_end >= centr_start - 250000, NA, avg_pi_window)) %>%
+  group_by(chromosome) %>%
+  mutate(med_pi = median(avg_pi_window, na.rm = TRUE),
+         above  = ifelse(avg_pi_window >= med_pi, avg_pi_window, med_pi),
+         region = case_when(
+           window_end   < centr_start - 250000 ~ "left",
+           window_start > centr_stop  + 250000 ~ "right",
+           TRUE ~ NA_character_
+         )) %>%
+  ungroup()
+
+lyrata_plot <- ggplot(pi_lyrata, aes(x = window_start / 1e6, y = avg_pi_window)) +
+  geom_ribbon(aes(ymin = med_pi, ymax = above), fill = "#238443", alpha = 0.3, na.rm = TRUE) +
+  geom_smooth(data = pi_lyrata %>% filter(region == "left"),
+              method = "loess", span = 0.2, color = "#238443", se = FALSE, na.rm = TRUE) +
+  geom_smooth(data = pi_lyrata %>% filter(region == "right"),
+              method = "loess", span = 0.2, color = "#238443", se = FALSE, na.rm = TRUE) +
+  geom_point(size = 0.8, na.rm = TRUE, color = "#238443", alpha=0.5) +
+  geom_hline(aes(yintercept = med_pi), linetype = "dashed", color = "black", linewidth = 0.5) +
+  geom_rect(data = centromeres,
+            aes(xmin = (start - 250000) / 1e6, xmax = (stop + 250000) / 1e6,
+                ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "darkgrey", alpha = 0.5) +
+  scale_y_continuous() +
+  facet_wrap(~ chromosome, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)", y = expression(pi[4-fold])) +
+  theme_bw(base_size = 16) +theme(strip.background = element_blank())
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_all_chromosomes_lyrata.png",
+       plot = lyrata_plot,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```

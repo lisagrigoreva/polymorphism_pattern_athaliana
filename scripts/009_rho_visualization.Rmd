@@ -1,0 +1,263 @@
+---
+title: "rho_visualization"
+output: html_document
+date: "2024-04-07"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(tidyr)
+
+# Set the working directory to where your files are located
+setwd("/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/historical_recombination/chr5/") # Update this with your actual directory path
+
+# List all files that match your criteria (assuming 'res.txt' is part of all filenames)
+files <- list.files(pattern="res\\.txt$")
+
+# Initialize an empty data table to store the combined data
+combined_data <- rbindlist(lapply(files, function(file) {
+  # Read the current file
+  dt <- fread(file)
+  
+  # Remove the first line of data after the header
+  if (nrow(dt) > 1) {
+    dt <- dt[-1, ]
+  }
+  
+  # Check if 'Loci' column exists and multiply its values by 1000
+  if ("Loci" %in% names(dt)) {
+    dt[, Loci := Loci * 1000]
+  }
+  
+  return(dt)
+}), use.names = TRUE, fill = TRUE)
+
+# Optional: Save the combined data to a new file
+fwrite(combined_data, "combined_ldhat_output_with_loci_adjusted.csv", sep = "\t")
+print("Combined LDhat output with Loci adjusted and without the first data row of each file has been saved.")
+
+```
+# Adjust per window 
+```{r}
+# Calculate window limits
+window_size <- 500000
+overlap_size <- 5000
+mid_overlap <- 2500 # Middle of the overlap
+
+# Function to adjust Mean_rho within overlaps
+adjust_overlaps <- function(dt) {
+  # Iterate over the windows, skipping the first since it has no previous overlap
+  for (start_loci in seq(from = window_size, to = max(dt$Loci), by = window_size)) {
+    # Define the overlap range
+    overlap_start <- start_loci - overlap_size + mid_overlap + 1
+    overlap_end <- start_loci + mid_overlap
+    
+    # Subset data for the overlap
+    overlap_dt <- dt[Loci >= overlap_start & Loci <= overlap_end]
+    
+    # Check if there is overlap data to process
+    if (nrow(overlap_dt) > 0) {
+      # Calculate the mean of Mean_rho for the overlap
+      mean_rho <- mean(overlap_dt$Mean_rho)
+      
+      # Assign the averaged Mean_rho back to the main dataset for the overlap range
+      dt[Loci >= overlap_start & Loci <= overlap_end, Mean_rho := mean_rho]
+    }
+  }
+  
+  return(dt)
+}
+
+# Apply the adjustment function to your dataset
+combined_data_adjusted <- adjust_overlaps(combined_data)
+
+# Now combined_data_adjusted contains Mean_rho averaged over the middle 2,500 bp of each overlap
+
+```
+# Visualize
+```{r}
+# Define the window size
+# Define window size and step size
+# Define window size and parameters
+window_size <- 500000
+step_size <- window_size  # Non-overlapping windows for efficiency
+min_loci <- 1
+max_loci <- 26975502
+
+# Pre-calculate number of windows needed
+n_windows <- ceiling((max_loci - min_loci + 1) / window_size)
+
+# Pre-allocate result data.table for better performance
+mean_rho_per_window <- data.table(
+  Start = numeric(n_windows),
+  End = numeric(n_windows),
+  Mean_rho_mean = numeric(n_windows)
+)
+
+# Sort data by Loci first (if not already sorted)
+setorder(combined_data_adjusted, Loci)
+
+# Create a more efficient windowing function
+calculate_windows <- function(dt) {
+  # Add window index to each row
+  dt[, window_idx := floor((Loci - min_loci) / window_size) + 1]
+  
+  # Calculate means by window index
+  window_means <- dt[, .(
+    Start = min_loci + (window_idx - 1) * window_size,
+    End = min_loci + window_idx * window_size - 1,
+    Mean_rho_mean = mean(Mean_rho)
+  ), by = window_idx]
+  
+  # Remove window_idx column
+  window_means[, window_idx := NULL]
+  return(window_means)
+}
+
+# Calculate windows efficiently
+mean_rho_per_window <- calculate_windows(combined_data_adjusted)
+
+# Add chromosome information
+mean_rho_per_window[, chromosome := "Chr5"]
+
+
+# Save the results to a file
+fwrite(mean_rho_per_window, "/groups/nordborg/projects/genome_organization/08_manuscripts/03_results/historical_recombination/chr5_ldhat_output_with_loci_adjusted_windows_500kb.csv", sep = "\t")
+```
+
+```
+
+```{r}
+ggplot(mean_rho_per_window, aes(x = Start, y = Mean_rho_mean)) +
+  geom_point(size = 0.8, alpha = 0.7, colour = "#527853") +
+  geom_line(size = 0.8, alpha = 0.7, colour = "#527853") +
+  custom_theme + ylab("rho") + xlab("Mbp")
+
+mean_rho_per_window$chromosome <- "Chr1"
+```
+# Upload pi 
+```{r}
+pi_4fold_thal <- read.table("/groups/nordborg/projects/genome_organization/03_processing/001_pi_pacbio_27g_thaliana/pixy_pi_thaliana_genic_and_non_genic/all_chr_biall_genic_4_fold_all_genes_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+
+pi_0fold_thal <- read.table("/groups/nordborg/projects/genome_organization/03_processing/001_pi_pacbio_27g_thaliana/pixy_pi_thaliana_genic_and_non_genic/all_chr_biall_genic_4_fold_all_genes_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+
+
+#pi_0fold_thal <- read.table("/groups/nordborg/projects/genome_organization/03_processing/001_pi_pacbio_27g_thaliana/pixy_pi_thaliana_genic_and_non_genic/all_chr_biall_genic_0_fold_all_genes_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+centromeres <- read.csv2('/groups/nordborg/projects/genome_organization/01_data/tair10/centr_bound.txt',header=T, sep=",")
+chromosome_lengths <- data.frame(
+  chromosome = c("Chr1", "Chr2", "Chr3", "Chr4", "Chr5"),
+  Golden_path_length = c("30427671", "19698289", "23459830", "18585056", "26975502")
+)
+# Full join of 0 and 4 fold degenerate sites
+pi_combined <- full_join(pi_4fold_thal, pi_0fold_thal, 
+                         by=c("chromosome", "window_pos_1", "window_pos_2"), 
+                         suffix=c("_4fold", "_0fold")) %>%
+  mutate(window_start = (window_pos_1 %/% 500000) * 500000 + 1,
+         window_end = window_start + 499999)
+
+# Calculate gene density
+gene_density <- pi_combined %>%
+  dplyr::count(chromosome, window_start, window_end, name = "gene_count")
+
+
+# Correct averaging formula
+pi_combined <- pi_combined %>%
+  group_by(chromosome, window_start, window_end) %>%
+  dplyr::summarise(avg_pi_4_fold_window = sum((count_diffs_4fold)) / sum(count_comparisons_4fold),
+            avg_pi_0_fold_window = sum((count_diffs_0fold)) / sum(count_comparisons_0fold))
+
+
+# Merge gene density back into pi_combined
+pi_combined <- left_join(pi_combined, gene_density, by = c("chromosome", "window_start", "window_end"))
+
+head(pi_combined)
+```
+#Upload selection coefficient optimization
+
+```{r}
+chr1_one_coeff <- read.table("/groups/nordborg/projects/genome_organization/03_processing/008_modeling_selection/Chr3_two_coeff_0.0005251216490145434_0.00032713778498542727_data_with_te.csv", sep=",", header = T)
+```
+# Visualization
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+minimal_theme_settings <- ggplot2::theme_minimal(base_size = 25)
+custom_theme <- theme(
+  plot.background = element_blank(), 
+  strip.text = element_text(size = 25, color = "gray30"),
+  panel.background = element_blank(),
+  panel.border = element_blank(), # Ensure no frame
+  panel.grid = element_blank(),
+  axis.title.x = element_text(color = "gray30", size = 25), # Set x-axis title color and size
+  axis.title.y = element_text(color = "gray30", size = 25), # Set y-axis title color and size
+  axis.ticks.x = element_blank(),
+  axis.line = element_line(color = "gray30"), # Add this line to show x and y axis lines
+  strip.background = element_blank(),
+   axis.text.x = element_text(color = "gray30", size = 25), # Adjust x-axis text size and color
+    axis.text.y = element_text(color = "gray30", size = 25),
+  strip.text.x = element_text(color = "gray30",size = 25), # Control color of facet wrap titles
+  legend.text = element_text(color = "gray30",size = 25) # Set legend text color
+)
+
+# Assuming your data frames are correctly named and loaded
+
+# Since the structure might be slightly different, let's assume we've already
+# aligned `mean_rho_per_window` with `product_ET` and `pi_combined` by `window_start`
+# This step might require adjustments based on your real data structure
+
+
+data_combined <- chr1_one_coeff %>%
+  select(chromosome, window_start, window_end, product_ET, avg_pi) %>%
+  inner_join(pi_combined, by = c("chromosome", "window_start", "window_end")) %>%
+  # Correct the join condition here
+  inner_join(mean_rho_per_window, by = c("chromosome", "window_start" = "Start"))
+
+
+# Scaling the data for pi, ET (product_ET), and rho (Mean_rho_mean)
+data_scaled <- data_combined %>%
+  mutate_at(vars(avg_pi, product_ET, Mean_rho_mean), scale)
+
+# Renaming for clarity in plotting
+data_long <- data_scaled %>%
+  select(window_start, avg_pi_scaled = avg_pi, ET_scaled = product_ET, rho_scaled = Mean_rho_mean) %>%
+  pivot_longer(-window_start, names_to = "Variable", values_to = "Scaled Value")
+
+data_long_1 <- data_long[data_long$Variable!="rho_scaled",]
+data_long_2 <- data_long[data_long$Variable!="ET_scaled",]
+# Plotting with ggplot2
+library(scales)
+
+
+plot1 <- ggplot(data_long_1, aes(x = window_start, y = `Scaled Value`, color = Variable)) +
+  geom_rect(data = data_long_2, aes(xmin = 17559778 + 4000000, xmax = 26408303, ymin = -Inf, ymax = Inf), 
+            fill = "#DDDDDD", alpha = 0.03, color = "grey") +  # Set border color to grey
+  geom_rect(aes(xmin = ifelse(14841109 - 4000000 < 1, 1, 14841109 - 4000000), xmax = 17559778 + 4000000, ymin = -Inf, ymax = Inf), 
+            fill = "#DDDDDD", alpha = 0.03, color = "grey") +  # Set border color to grey
+  geom_vline(data = data_long_2, aes(xintercept = 26408303), color = "gray30", linetype = "solid", size = 0.8, alpha = 0.3) +
+  geom_vline(aes(xintercept = ifelse(14841109 - 4000000 < 1, 1, 14841109 - 4000000)), color = "gray30", linetype = "solid", size = 0.8, alpha = 0.3) +
+  geom_line(size = 1, alpha = 0.7) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_x_continuous(labels = scales::unit_format(unit = "M", scale = 1e-6)) +  # Consolidated scale_x_continuous
+  labs(x = "Window Start", y = "Scaled Value", title = "Scaled Pi, ET, and Rho across Chromosome 1 Windows") +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(values = c("avg_pi_scaled" = "#51829B", "ET_scaled" = "#FF6C22")) +
+  custom_theme  # Ensure custom_theme is correctly defined earlier in your code
+
+width_inches <- 25
+height_inches <- 8
+dpi <- 600
+CairoPNG("/groups/nordborg/projects/genome_organization/08_manuscripts/01_figures/et_vs_rho.png", width = width_inches * dpi, height = height_inches * dpi, dpi = dpi)
+print(plot1)
+dev.off()
+
+```
+
+
+
+
+
+
+

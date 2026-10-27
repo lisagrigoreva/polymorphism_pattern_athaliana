@@ -1,0 +1,171 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-04-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+library(tidyverse)
+tx_info <- read_tsv("/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/mapping_bias/transcripts.bed",
+                    col_names = c("chrom","start","end","gene_id","score","strand", "feature"),
+                    show_col_types = FALSE)
+head(tx_info)
+
+# Get gene length
+tx_info <- tx_info %>%
+  mutate(tx_length = end - start)
+
+# Load reads BED
+bed <- read_tsv("/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/300167_S180Aligned.toTranscriptome.out.bed",
+                col_names = c("gene_id","read_start","read_end","read_name","score","strand"),
+                show_col_types = FALSE)
+
+
+bed_joined <- bed %>%
+  left_join(tx_info %>% select(gene_id, tx_length, strand),
+            by = "gene_id") %>%
+  mutate(dist_to_3prime = tx_length - read_start)
+
+head(bed_joined)
+bed_joined <- na.omit(bed_joined)
+bed_joined %>% 
+  #filter(gene_id == "AT5TE20395" &  score==255)%>% 
+  ggplot(aes(x = dist_to_3prime)) +
+  geom_histogram(bins = 100, fill = "steelblue", color = "steelblue", alpha = 0.7) +
+  scale_x_continuous(limits = c(-100, 3000)) +
+  labs(
+    title = "Distance of reads to 3' end",
+    x = "Distance to 3' end (bp)",
+    y = "Number of reads"
+  ) +
+  theme_bw()
+
+```
+
+
+```{r}
+## Check 3' bias for anti-sense TEs (claimed to be anti-sense)
+library(dplyr)
+
+# Load transcripts
+tx <- read_tsv("/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/mapping_bias/transcripts.bed",
+                    col_names = c("chrom","tx_start","tx_end","tx_id","score","strand", "feature"),
+                    show_col_types = FALSE)
+# Load reads (transcriptome coordinates)
+reads <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/mapping_bias/294324_S11.toTranscriptome.out.bed", header = FALSE,col.names = c("tx_id", "start", "end", "read_id", "score", "strand")) %>%
+  mutate(mid = (start + end) / 2)
+```
+# Sense and anti-sense distribution
+```{r}
+merged <- reads %>%
+  inner_join(tx, by = "tx_id")
+```
+
+```{r}
+merged <- reads %>%
+  inner_join(select(tx, tx_id, tx_start, tx_end, strand), by="tx_id") %>%
+  mutate(
+    tx_len      = tx_end - tx_start,   # genomic length = transcript length ✓
+    dist_5prime = mid,                  # mid is already in transcript coords (0=5')
+    dist_3prime = tx_len - mid,         # distance from 3' end
+    rel_pos     = mid / tx_len          # 0=5', 1=3'
+  ) 
+
+merged$feature <- ifelse(grepl("TE", merged$tx_id), "TE", "gene")
+
+merged_long <- merged %>%
+  dplyr::select(feature, dist_5prime,rel_pos, dist_3prime) %>%
+  pivot_longer(cols = -feature,
+               names_to  = "metric",
+               values_to = "value") %>%
+  mutate(metric = recode(metric,
+    "dist_5prime" = "Dist from 5'",
+    "rel_pos"="rel_pos",
+    "dist_3prime" = "Dist from 3'"))
+
+ggplot(merged_long, aes(x = value, fill = metric)) +
+  geom_histogram(bins = 50, color = "white") +
+  scale_fill_manual(values = c(
+    "Dist from 5'"          = "seagreen",
+    "Dist from 3'"          = "tomato",
+    "rel_pos"=="blue"
+  )) +
+  facet_grid(feature ~ metric, scales = "free") +
+  labs(title = "Read distribution relative to gene ends",
+       x = NULL, y = "Count") +
+  theme_bw() +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"))
+```
+## Check examples (EVADE)
+```{r}
+merged %>%
+  filter(tx_id == "AT5TE20395") %>%
+  ggplot() +
+  geom_histogram(aes(x=dist_5prime), fill="seagreen", bins=30, color="white") +
+  theme_classic()
+```
+## Calculate over all files
+```{r}
+
+library(tidyverse)
+
+bed_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/mapping_bias/"
+
+# Load transcript annotation once
+tx <- read_tsv(file.path(bed_dir, "transcripts.bed"),
+               col_names = c("chrom","tx_start","tx_end","tx_id","score","strand","feature"),
+               show_col_types = FALSE)
+
+# Get all toTranscriptome BED files
+bed_files <- list.files(bed_dir, pattern = "\\.toTranscriptome\\.out\\.bed$", full.names = TRUE)
+
+
+# Pre-key tx once
+library(data.table)
+library(dplyr)
+library(furrr)
+
+# Set up parallel workers (use available cores - 1)
+library(progressr)
+
+plan(multisession, workers = max(1, parallelly::availableCores() - 1))
+
+tx_sub <- select(tx, tx_id, tx_start, tx_end, strand)
+
+with_progress({
+  p <- progressor(steps = length(bed_files))
+  
+  all_results <- future_imap_dfr(bed_files, function(f, i) {
+    sample_id <- sub("_.*", "", basename(f))
+    p(sprintf("Processing %s [%d/%d]", sample_id, i, length(bed_files)))
+    
+    fread(f, col.names = c("tx_id", "start", "end", "read_id", "score", "strand")) %>%
+      mutate(mid = (start + end) / 2) %>%
+      inner_join(tx_sub, by = "tx_id") %>%
+      filter(strand.x == strand.y) %>%
+      mutate(
+        sample_id   = sample_id,
+        dist_5prime = if_else(strand.y == "+", mid - tx_start, tx_end - mid),
+        dist_3prime = if_else(strand.y == "+", tx_end - mid,   mid - tx_start),
+        rel_pos     = dist_5prime / (tx_end - tx_start)
+      ) %>%
+      filter(rel_pos >= 0, rel_pos <= 1) %>%
+      select(sample_id, tx_id, read_id, strand.y, dist_5prime, dist_3prime, rel_pos)
+  })
+})
+
+plan(sequential)
+plan(sequential)  # res
+# Save
+write_tsv(all_results, file.path(bed_dir, "all_samples_read_distances.tsv"))
+```
+
+
+
+

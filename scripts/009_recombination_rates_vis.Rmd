@@ -1,0 +1,128 @@
+---
+title: "000_define_peric_boundaries"
+output: html_document
+date: "2024-08-27"
+---
+
+# Upload packages 
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyverse)
+```
+# Read mercier data (1Mb ,female and male crossovers)
+```{r}
+female <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/crossover_data_mercier/4314_ABCDEF.final.snp.ABEF.phase_v9.2.7.refinedCOs.hap.female.COs_freq_rand_chr.fl3.w1000s50.txt")
+male <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/crossover_data_mercier/4314_ABCDEF.final.snp.ABEF.phase_v9.2.7.refinedCOs.hap.male.COs_freq_rand_chr.fl3.w1000s50.txt")
+## Get average crossover 1Mbp (join)
+female_and_male <- inner_join(female,male, by=c("V1", "V3", "V4"), suffix=c("_female", "_male"))
+## Get 1Mbp windows (since 50kb step * 20 = 1Mb)
+library(dplyr)
+non_overlapping <- female_and_male %>%
+  group_by(V1) %>%
+  dplyr::slice(seq(1, n(), by = 20)) %>%
+  ungroup()
+non_overlapping
+# Get average crossovers
+non_overlapping <- non_overlapping %>% 
+  group_by(V1, V3, V4) %>% 
+  mutate(avg_co = mean(c(V6_female, V6_male))) %>%
+  ungroup()
+```
+## Plot average crossovers 
+```{r}
+### Write as an output crossovers 
+non_overlapping <- non_overlapping %>% dplyr::select(V1,V3,V4,avg_co)
+colnames(non_overlapping) <- c("Chr", "start", "end", "avg_co")
+non_overlapping$avg_co <-non_overlapping$avg_co*100
+#write.table(non_overlapping, "/groups/nordborg/projects/genome_organization/01_data/crossover_data_mercier/female_male1mb_non_overlapping_crossovers.csv", sep="\t",quote = F, row.names = F)
+```
+
+```{r}
+## Plot crossovers 
+p <- ggplot(non_overlapping, aes(x = start / 1e6, y = avg_co)) +
+  geom_smooth(method = "loess", span = 0.2, color = "#542788", se = FALSE, na.rm = TRUE) +
+  geom_point(size = 2, na.rm = TRUE, color = "#542788", alpha=0.5) +
+  scale_y_continuous() +
+  facet_wrap(~ Chr, scales = "free_x", nrow = 1) +
+  labs(x = "Position (Mb)", y = "CO per Mbp") +
+  theme_bw(base_size = 16) 
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/co_per_mbp_all_chromosomes.png",
+       plot = p,
+       width = 300, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+## CO vs polymorphosm 
+```{r}
+pi_4fold_thal <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_diversity_thaliana/4fol_sites_thal_27g_tair10_based_1to1_genes_pi_500mbp_250_sliding_windows.txt")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(GenomicRanges)
+
+# Convert pi windows to GRanges
+pi_gr <- GRanges(
+  seqnames = pi_4fold_thal$chromosome,
+  ranges = IRanges(
+    start = pi_4fold_thal$window_start,
+    end = pi_4fold_thal$window_end
+  ),
+  avg_pi_window = pi_4fold_thal$avg_pi_window
+)
+
+# Convert recombination windows to GRanges
+co_gr <- GRanges(
+  seqnames = non_overlapping$Chr,
+  ranges = IRanges(
+    start = non_overlapping$start,
+    end = non_overlapping$end
+  ),
+  avg_co = non_overlapping$avg_co
+)
+
+# Find overlapping windows
+hits <- findOverlaps(pi_gr, co_gr)
+
+# Build matched dataframe
+pi_co <- data.frame(
+  chromosome = as.character(seqnames(pi_gr[queryHits(hits)])),
+  window_start = start(pi_gr[queryHits(hits)]),
+  window_end = end(pi_gr[queryHits(hits)]),
+  avg_pi_window = mcols(pi_gr[queryHits(hits)])$avg_pi_window,
+  avg_co = mcols(co_gr[subjectHits(hits)])$avg_co
+)
+
+# Optional: remove NA values
+pi_co <- pi_co %>%
+  filter(!is.na(avg_pi_window), !is.na(avg_co))
+```
+
+
+```{r}
+model <- lm(avg_pi_window ~ avg_co, data = pi_co)
+
+slope <- coef(model)[["avg_co"]]
+intercept <- coef(model)[["(Intercept)"]]
+r_value <- cor(pi_co$avg_co, pi_co$avg_pi_window, use = "complete.obs")
+
+slope
+intercept
+r_value
+```
+## Add historical crossovers
+```{r}
+```
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,564 @@
+---
+title: "002_individual_gene_synteny"
+output: html_document
+date: "2026-06-03"
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+```
+## Get orthologous genes 
+```{r}
+pannagram_1_1_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/coordinates_without_genes.csv", header=T, sep=",")
+colnames(pannagram_1_1_genes) <- c("thaliana_id", "lyrata_start", "lyrata_end","lyrata_chr")
+## Intersect with thaliana ids
+genes_athaliana <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")  %>% filter(V3=="gene")
+genes_athaliana$gene_id <- sub(".*ID=([^;]+);.*", "\\1", genes_athaliana$V9)
+genes_athaliana[, gene_id_clean := sub("Parent=([^.]+)\\..*", "\\1", gene_id)]
+genes_athaliana <- genes_athaliana %>% dplyr::select(V1,V4,V5,gene_id_clean)
+colnames(genes_athaliana) <- c("chr_thal", "star_thal", "end_thal", "gene_id_thal")
+## Connect coordinates to genes 
+pannagram_1_1_genes <- inner_join(pannagram_1_1_genes,genes_athaliana, by=c("thaliana_id"="gene_id_thal"))
+## Write a table 
+#pannagram_1_1_genes <- pannagram_1_1_genes %>% dplyr::select(chr_thal,star_thal,end_thal)
+#pannagram_1_1_genes$star_thal=pannagram_1_1_genes$star_thal-1
+#write.table(pannagram_1_1_genes, "/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/1to1_genes_coordinates_thaliana.bed", quote = F, row.names = F, sep="\t")
+```
+
+## Dotplot thaliana-lyrata 
+```{r}
+# Change crhomosome names
+pannagram_1_1_genes$lyrata_chr <- case_when(
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000001.1" ~ "Chr1",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000112.1" ~ "Chr2",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000223.1" ~ "Chr3",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000334.1" ~ "Chr4",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000445.1" ~ "Chr5",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000556.1" ~ "Chr6",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000667.1" ~ "Chr7",
+  pannagram_1_1_genes$lyrata_chr == "CALYLY010000762.1" ~ "Chr8",
+  TRUE ~ pannagram_1_1_genes$lyrata_chr)
+
+## Get the chromosome length 
+thal_lengths <- pannagram_1_1_genes %>%
+  group_by(chr_thal) %>%
+  dplyr::summarise(max_pos = max(end_thal)) %>%
+  arrange(chr_thal) %>%
+  mutate(cum_start = lag(cumsum(max_pos), default = 0))
+
+# Chromosome lengths and cumulative positions for A. lyrata
+lyr_lengths <- pannagram_1_1_genes %>%
+  group_by(lyrata_chr) %>%
+  dplyr::summarise(max_pos = max(lyrata_end)) %>%
+  arrange(lyrata_chr) %>%
+  mutate(cum_start = lag(cumsum(max_pos), default = 0))
+
+# Add cumulative positions to the main df
+pannagram_1_1_genes <- pannagram_1_1_genes %>%
+  left_join(thal_lengths %>% dplyr::select(chr_thal, cum_start), by = "chr_thal") %>%
+  dplyr::rename(cum_start_thal = cum_start) %>%
+  left_join(lyr_lengths %>% dplyr::select(lyrata_chr, cum_start), by = "lyrata_chr") %>%
+  dplyr::rename(cum_start_lyr = cum_start) %>%
+  dplyr::mutate(
+    cum_pos_thal = cum_start_thal + (star_thal + end_thal) / 2,
+    cum_pos_lyr = cum_start_lyr + (lyrata_start + lyrata_end) / 2
+  )
+
+# Detect transposed genes 
+pannagram_1_1_genes <- pannagram_1_1_genes %>%
+  mutate(
+    nn_dist = kNNdist(cbind(cum_pos_thal, cum_pos_lyr), k = 1)
+  ) %>%
+  group_by(chr_thal, lyrata_chr) %>%
+  mutate(n_in_group = n()) %>%
+  ungroup() %>%
+  mutate(is_isolated = nn_dist > 1e6)
+
+# Mark fridgida gene
+
+p <- ggplot(pannagram_1_1_genes, aes(x = cum_pos_thal / 1e6, y = cum_pos_lyr / 1e6)) +
+  geom_point(color = "#1E104E", alpha = 0.4, size = 1.5) +
+  geom_point(data = filter(pannagram_1_1_genes, is_isolated),
+             shape = 21, size = 1, fill = "#1E104E", color = "#1E104E", stroke = 1, alpha = 0.9) +
+  #geom_point(data = filter(pannagram_1_1_genes, gene_id_thal == "AT4G00650"),
+         #    shape = 21, size = 3, fill = "#FF653F", color = "#1E104E", stroke = 1) +
+  labs(x = "A. thaliana cumulative position (Mbp)", y = "A. lyrata cumulative position (Mbp)") +
+  scale_x_continuous(expand = expansion(mult = 0.02)) +
+  scale_y_continuous(expand = expansion(mult = 0.02)) +
+  theme_bw(base_size = 14)
+p
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/transposed_genes.png",
+       plot = p,
+       width = 150, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+## Flanking genes analysis 
+```{r}
+library(dplyr)
+window_bp <- 1000000      # 1 Mb neighbourhood in both species
+max_neighbours <- 2    # retain only points with <= 2 nearby plotted genes
+# Positions for every gene in the dot plot
+reference_positions <- pannagram_1_1_genes %>%
+  transmute(
+    ref_id = thaliana_id,
+    chr_thal,
+    lyrata_chr,
+    ref_x = cum_pos_thal,
+    ref_y = cum_pos_lyr
+  )
+
+# Positions for your existing neighbourhood-disruption candidates
+candidate_positions <- pannagram_1_1_genes %>%
+  transmute(
+    focal_id = thaliana_id,
+    chr_thal,
+    lyrata_chr,
+    focal_x = cum_pos_thal,
+    focal_y = cum_pos_lyr
+  )
+
+# Count other genes close in BOTH x and y coordinates.
+# Genes in a diagonal block will have many close local points.
+candidate_2d_density <- candidate_positions %>%
+  inner_join(
+    reference_positions,
+    by = c("chr_thal", "lyrata_chr")
+  ) %>%
+  dplyr::filter(
+    focal_id != ref_id,
+    abs(focal_x - ref_x) <= window_bp,
+    abs(focal_y - ref_y) <= window_bp
+  ) %>%
+  dplyr::count(focal_id, name = "n_local_2d_neighbours")
+
+# Keep candidate genes that are spatially isolated in the dot plot
+neighbourhood_candidates_filtered <- pannagram_1_1_genes %>%
+  left_join(
+    candidate_2d_density,
+    by = c("thaliana_id" = "focal_id")
+  ) %>%
+  mutate(
+    n_local_2d_neighbours = coalesce(n_local_2d_neighbours, 0L)
+  ) %>%
+  filter(n_local_2d_neighbours <= max_neighbours)
+
+moved_genes <- ggplot(
+  pannagram_1_1_genes,
+  aes(x = cum_pos_thal / 1e6, y = cum_pos_lyr / 1e6)
+) +
+  geom_point(color = "#053061", alpha = 0.4, size = 1.5) +
+  geom_point(
+    data = neighbourhood_candidates_filtered,
+    shape = 21,
+    size = 2.5,
+    fill = "#d6604d",
+    color = "black",
+    stroke = 0.4
+  ) +
+  geom_point(
+    data = filter(pannagram_1_1_genes, thaliana_id == "AT4G00650"),
+    shape = 21,
+    size = 3,
+    fill = "#238443",
+    color = "#1E104E",
+    stroke = 1
+  ) +
+  labs(
+    x = "A. thaliana cumulative position (Mbp)",
+    y = "A. lyrata cumulative position (Mbp)"
+  ) +
+  theme_bw(base_size = 14)
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/transposed_genes.png",
+       plot = moved_genes,
+       width = 130, height = 100, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
+
+## Check presence of introns 
+```{r}
+# Load gff of athaliana 
+athaliana_gff <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")
+ath_genes_gff <- athaliana_gff[V3 == "CDS",]
+ath_genes_gff[, gene_id := sub(".*ID=([^;]+).*", "\\1", V9)]
+## Map to the genes 
+single_moved_genes_mapped <- inner_join(neighbourhood_candidates_filtered,ath_genes_gff, by=c("thaliana_id"="gene_id"))
+## Check presene of introns
+# Extract exons for moved genes only
+ath_exons <- athaliana_gff[V3 == "exon"]
+ath_exons[, gene_id := sub(".*Parent=([^.]+).*", "\\1", V9)]
+# Count exons per gene introns = exons - 1
+gene_structure <- ath_exons[gene_id %in% neighbourhood_candidates_filtered$thaliana_id,
+                             .(n_exons = .N), by = gene_id]
+gene_structure[, n_introns := n_exons - 1]
+gene_structure[, has_intron := n_introns >= 1]
+genes_with_introns_lyrata_thaliana <- gene_structure[gene_structure$has_intron=="TRUE",]
+```
+## Write a table of moved genes 
+```{r}
+## Get positions in thaliana and lyrata
+genes_with_introns_lyrata_thaliana_with_coordinates <- inner_join(genes_with_introns_lyrata_thaliana,pannagram_1_1_genes, by=c("gene_id"="thaliana_id"))
+
+write.table(genes_with_introns_lyrata_thaliana_with_coordinates, "/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", quote=F, row.names = F, sep="\t")
+```
+
+## Read genes with lyrata ancestral location
+```{r}
+genes_with_ancestral_loc <- read.csv("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/genes_conf_ancestral_loc.txt", header=F)
+colnames(genes_with_ancestral_loc) <- "gene_id"
+moved_genes <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", sep="\t")
+moved_genes <- moved_genes[moved_genes$gene_id %in% genes_with_ancestral_loc$gene_id, ]
+```
+
+## Gene moves visualization
+```{r}
+## Make circulat plot
+# Only between-chromosome gene movements
+library(data.table)
+library(circlize)
+
+setDT(moved_genes)
+
+to_chr <- function(x) paste0("Chr", sub("^Chr", "", as.character(x)))
+
+thaliana_levels <- paste0("Chr", 1:5)
+lyrata_levels   <- paste0("Chr", 1:8)
+
+# ---- keep only inter-chromosomal moves ----
+moves <- moved_genes[
+  to_chr(chr_thal) != to_chr(lyrata_chr),
+  .(gene_id,
+    chr_thal   = factor(to_chr(chr_thal),   levels = thaliana_levels),
+    lyrata_chr = factor(to_chr(lyrata_chr), levels = lyrata_levels))
+]
+
+# ---- count unique genes: source (lyrata) -> destination (thaliana) ----
+movement_counts <- moves[
+  , .(n_genes = uniqueN(gene_id)),
+  by = .(lyrata_chr, chr_thal)
+]
+
+# Matrix rows = source (lyrata), cols = destination (thaliana)
+movement_matrix <- as.matrix(
+  dcast(
+    movement_counts,
+    lyrata_chr ~ chr_thal,
+    value.var = "n_genes",
+    fill = 0,
+    drop = FALSE
+  )[, -1]
+)
+
+rownames(movement_matrix) <- paste0("A.lyr_", lyrata_levels)
+colnames(movement_matrix) <- paste0("A.thal_", thaliana_levels)
+
+# ---- colors ----
+shared_colors_base <- c(
+  "Chr1" = "#b35806", "Chr2" = "#e08214", "Chr3" = "#f1b6da", "Chr4" = "#542788",
+  "Chr5" = "#4d9221", "Chr6" = "#d73027", "Chr7" = "#fee090", "Chr8" = "#80cdc1"
+)
+
+lyrata_colors <- setNames(shared_colors_base[lyrata_levels],   paste0("A.lyr_", lyrata_levels))
+thal_colors   <- setNames(shared_colors_base[thaliana_levels], paste0("A.thal_", thaliana_levels))
+grid_col      <- c(lyrata_colors, thal_colors)
+
+link_col <- matrix(
+  lyrata_colors[rownames(movement_matrix)],
+  nrow = nrow(movement_matrix),
+  ncol = ncol(movement_matrix),
+  dimnames = dimnames(movement_matrix)
+)
+
+# Plot
+png(
+  filename = "/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/circle_diagram.png",
+  width = 200, height = 100, units = "mm", res = 600, type = "cairo", bg = "white"
+)
+circos.clear()
+chordDiagram(
+  x = movement_matrix,
+  grid.col = grid_col,
+  col = link_col,
+  directional = 1,
+  direction.type = c("arrows", "diffHeight"),
+  link.arr.length = 0.1,
+  link.arr.width  = 0.08,
+  link.visible = movement_matrix > 0,
+  transparency = 0.35,
+  annotationTrack = "grid",
+  preAllocateTracks = list(track.height = 0.08),
+  link.border = NA
+)
+
+circos.trackPlotRegion(track.index = 1, bg.border = NA, panel.fun = function(x, y) {
+  s <- get.cell.meta.data("sector.index")
+  lab <- sub(".*Chr", "", s)
+  xlim <- get.cell.meta.data("xlim")
+  ylim <- get.cell.meta.data("ylim")
+  circos.text(mean(xlim), ylim[1] + 0.1, lab,
+              facing = "clockwise", niceFacing = TRUE,
+              adj = c(0, 0.5), cex = 0.55)
+})
+
+dev.off()
+```
+
+## Define compartments in lyrata and thaliana 
+```{r}
+pi_4fold_thal <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_diversity_thaliana/4fol_sites_thal_27g_tair10_based_pi.txt", header=TRUE, sep='\t') %>% na.omit() %>% distinct()
+##Read Pi in lyrata 
+pi4_fold_lyrata <-  read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/002_divergence_diversity_thal_lyr/4fol_sites_lyr_31g_tair10_based_pi.txt", header=T, sep='\t')
+pi4_fold_lyrata <- pi4_fold_lyrata[pi4_fold_lyrata$pop=="LYR",] %>% na.omit()
+```
+
+```{r}
+## Calculate pi in windows 
+calc_window <- function(data, window_size = 500000, step_size = window_size) {
+  chromosomes <- unique(data$chromosome)
+  results <- list()
+  for (chr in chromosomes) {
+    chr_data <- data %>% 
+      filter(chromosome == chr)
+    max_pos <- max(chr_data$window_pos_2, na.rm = TRUE)
+    starts <- seq(1, max_pos, by = step_size)
+    for (ws in starts) {
+      we <- ws + window_size - 1
+      overlap <- chr_data %>% 
+        filter(window_pos_1 <= we & window_pos_2 >= ws)
+      if (nrow(overlap) == 0) next
+      results[[length(results) + 1]] <- overlap %>%
+        mutate(
+          window_start = ws,
+          window_end = we
+        )
+    }
+  }
+  
+  bind_rows(results)
+}
+
+# Calculate average pi/dxy
+average_pi <- function(data) {
+  data %>%
+    group_by(chromosome, window_start, window_end) %>%
+    dplyr::summarise(
+      avg_pi_window = sum(count_diffs) / sum(count_comparisons),
+      .groups = "drop"
+    )
+}
+
+pi_4fold_thal <- pi_4fold_thal %>% calc_window() %>% average_pi()
+pi4_fold_lyrata <- pi4_fold_lyrata %>% calc_window() %>% average_pi()
+## Add median pi for each chromosome
+## Define high and low windows 
+pi_4fold_thal <- pi_4fold_thal %>%
+  group_by(chromosome) %>%
+  mutate(median_pi = median(avg_pi_window))
+pi4_fold_lyrata <- pi4_fold_lyrata %>%
+  group_by(chromosome) %>%
+  mutate(median_pi = median(avg_pi_window))
+## Define high low compartments
+pi_4fold_thal$compartment <- ifelse(pi_4fold_thal$avg_pi_window>pi_4fold_thal$median_pi, "high", "low")
+pi4_fold_lyrata$compartment <- ifelse(pi4_fold_lyrata$avg_pi_window>pi4_fold_lyrata$median_pi, "high", "low")
+# Join tables and define movements 
+pi_both_species <- inner_join(pi_4fold_thal,pi4_fold_lyrata, by=c("chromosome", "window_start"), suffix=c("_thal", "_lyrata"))
+```
+## Assign moved genes to the compartments 
+```{r}
+moved_genes <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", sep="\t")
+```
+## Plot moves to the compartments 
+```{r}
+library(data.table)
+library(ggplot2)
+# Keep only genes that moved to a different chromosome
+#interchromosomal_moves <- moved_genes[
+#  chr_thal != lyrata_chr
+#]
+# Count gene movements for every chromosome pair
+setDT(moved_genes)
+movement_counts <- moved_genes[
+  ,
+  .(n_genes = uniqueN(gene_id)),
+  by = .(chr_thal, lyrata_chr)
+]
+
+# Ensure chromosomes are displayed in numerical order
+movement_counts[, chr_thal := factor(
+  chr_thal,
+  levels = paste0("Chr", 1:5)
+)]
+
+movement_counts[, lyrata_chr := factor(
+  lyrata_chr,
+  levels = paste0("Chr", 1:8)
+)]
+```
+
+```{r}
+library(data.table)
+# Convert to data.table
+genes_dt <- as.data.table(moved_genes)
+pi_dt    <- as.data.table(pi_both_species)
+
+# Create interval columns with distinct names for the overlap join
+genes_interval <- genes_dt[, .(
+  gene_id,
+  gene_chr   = chr_thal,
+  gene_start = star_thal,
+  gene_end   = end_thal
+)]
+
+windows_interval <- pi_dt[, .(
+  chromosome,
+  window_start,
+  window_end_thal,
+  window_end_lyrata,
+  avg_pi_window_thal,
+  median_pi_thal,
+  compartment_thal,
+  avg_pi_window_lyrata,
+  median_pi_lyrata,
+  compartment_lyrata
+)]
+
+# foverlaps needs interval keys
+setkey(windows_interval, chromosome, window_start, window_end_thal)
+setkey(genes_interval, gene_chr, gene_start, gene_end)
+
+# Keep all windows that overlap a gene
+gene_windows <- foverlaps(
+  x = genes_interval,
+  y = windows_interval,
+  by.x = c("gene_chr", "gene_start", "gene_end"),
+  by.y = c("chromosome", "window_start", "window_end_thal"),
+  type = "any",
+  nomatch = 0L
+)
+```
+
+```{r}
+library(ggplot2)
+# Count genes/windows in each thaliana × lyrata compartment combination
+counts_moved <- gene_windows[, .N, by = .(compartment_thal, compartment_lyrata)]
+gene_windows2 <- gene_windows[gene_windows$gene_id %in% genes_with_ancestral_loc$gene_id, ]
+gene_windows <- gene_windows2
+# Square heatmap
+ggplot(
+  counts_moved,
+  aes(x = compartment_thal, y = compartment_lyrata, fill = N)
+) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = N), size = 6) +
+  coord_equal() +
+  labs(
+    x = "A. thaliana compartment",
+    y = "A. lyrata compartment",
+    fill = "Number of genes"
+  ) +
+  scale_fill_gradient(
+    low = "#4393c3",   # low values
+    high = "#d6604d"   # high values
+  ) +
+  theme_classic()
+```
+# Chi square test
+```{r}
+library(data.table)
+
+# Assuming moved_genes contains the same compartment columns
+dat <- copy(gene_windows)
+
+# Ensure consistent ordering
+dat[, compartment_thal := factor(compartment_thal, levels = c("low", "high"))]
+dat[, compartment_lyrata := factor(compartment_lyrata, levels = c("low", "high"))]
+
+# Counts for low-low, low-high, high-low, high-high
+tab <- table(
+  Source = dat$compartment_thal,
+  Destination = dat$compartment_lyrata
+)
+
+tab
+# Test of independance
+chisq_out <- chisq.test(tab)
+chisq_out
+chisq_out$expected
+```
+
+```{r}
+library(data.table)
+library(ggplot2)
+
+# Your existing 2x2 contingency table:
+# tab <- table(
+#   Source = moved_genes$compartment_thal,
+#   Destination = moved_genes$compartment_lyrata
+# )
+
+# Chi-square test
+chi_out <- chisq.test(tab)
+
+# Convert observed and expected values to a plotting data frame
+plot_dat <- as.data.table(as.table(tab))
+setnames(plot_dat, "N", "observed")
+
+expected_dat <- as.data.table(as.table(chi_out$expected))
+setnames(expected_dat, "N", "expected")
+
+plot_dat <- merge(
+  plot_dat,
+  expected_dat,
+  by = c("Source", "Destination")
+)
+
+# Create transition names and classify outcomes
+plot_dat[, transition := paste(Source, "→", Destination)]
+plot_dat[, movement_class := fifelse(
+  Source == Destination,
+  "Same compartment",
+  "Different compartment"
+)]
+
+# Keep a biologically intuitive order
+plot_dat[, transition := factor(
+  transition,
+  levels = c("low → low", "low → high", "high → low", "high → high")
+)]
+
+# Long format: one bar for observed and one for expected
+plot_long <- melt(
+  plot_dat,
+  id.vars = c("Source", "Destination", "transition", "movement_class"),
+  measure.vars = c("observed", "expected"),
+  variable.name = "count_type",
+  value.name = "count"
+)
+
+# Plot
+ggplot(plot_long, aes(x = transition, y = count, fill = count_type)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c(observed = "#238441", expected = "#053061")) +
+  labs(
+    title = "",
+    subtitle = paste0("χ² = ", round(chi_out$statistic, 2),
+                       ", df = ", chi_out$parameter,
+                       ", p = ", format.pval(chi_out$p.value, digits = 3, eps = 0.001)),
+    x = NULL, y = "Gene count", fill = NULL
+  ) +
+  theme_minimal(base_size = 18)
+```
+
+
+
+
+
+
+
+
+
+
+
