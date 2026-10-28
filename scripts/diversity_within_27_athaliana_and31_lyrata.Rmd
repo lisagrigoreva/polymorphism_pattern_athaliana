@@ -129,9 +129,9 @@ pi_4fold_lyrata <- fread("/groups/nordborg/projects/genome_organization/manuscri
 
 ````{r}
 ## Read centromeres 
-centromeres <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/centr_boundaries_wlodzimierz_2023.txt",header=T, sep="\t")
-centromeres$start <- as.numeric(centromeres$centr_start)
-centromeres$stop <-as.numeric(centromeres$centr_end)
+centromeres <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/centromere_boundaries_wlodzimierz2023.txt",header=T, sep="\t") %>% filter(Accession=="MN47")
+centromeres$start <- as.numeric(centromeres$start)
+centromeres$stop <-as.numeric(centromeres$end)
 
 # Calculate  300 KB widnows 
 calc_window_not_sliding <- function(data) {
@@ -156,7 +156,7 @@ pi_4fold_lyrata <- pi_4fold_lyrata %>% calc_window() %>% average_pi()
 ##Plot
 ```{r}
 # Harmonize chrom naming
-centromeres$chromosome <- centromeres$Chr
+centromeres$chromosome <- centromeres$chr
 ```
 ## Visualize with dark near centromeres 
 ```{r}

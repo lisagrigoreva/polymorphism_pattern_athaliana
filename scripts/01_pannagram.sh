@@ -17,7 +17,7 @@ conda activate pannagram
 # Paths
 DIR="/groups/nordborg/projects/genome_organization/manuscript"
 # Run pannagram 
-pannagram -cores 10 -path_in ${DIR}/01_data/27_genomes/ -path_out ${DIR}/04_output/01_pannagram_27_genomes -ref "TAIR10" -nchr 5 -nchr_ref 5 
+pannagram -cores 10 -path_in ${DIR}/01_data/27_genomes/ -path_out ${DIR}/04_output/pannagram_27_genomes -ref "TAIR10" -nchr 5 -nchr_ref 5 
 # get features
 features -path_project ${DATA}/04_output/pannagram_thal_27g_tair10 -ref 'TAIR10' -seq -cores 10
 
@@ -25,3 +25,8 @@ features -path_project ${DATA}/04_output/pannagram_thal_27g_tair10 -ref 'TAIR10'
 pannagram -cores 10 -path_in ${DIR}/04_output/pannagram_31_lyr_27thal_tair10based/thal_and_lyr_genomes -path_out ${DIR}/04_output/pannagram_31_lyr_27thal_tair10based -ref "TAIR10" -nchr 5 -nchr_ref 5 
 # get features
 features -path_project ${DATA}/04_output/pannagram_31_lyr_27thal_tair10based -ref 'TAIR10' -seq -cores 10
+
+## Pannagram MN47 reference, 31 lyr ##
+pannagram -cores 10 -path_in ${DIR}/01_data/31_lyrata_genomes/genomes_8scaff/fasta -path_out ${DIR}/04_output/pannagram_lyr_31g_mn47 -ref "MN47v2" -nchr 8 -nchr_ref 8 &&
+# get features
+features -path_project ${DIR}/04_output/pannagram_lyr_31g_mn47 -ref 'MN47v2' -blocks -seq -snp -cores 1

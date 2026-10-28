@@ -5,16 +5,17 @@ The analyses study patterns of diversity in a collection of 27 *Arabidopsis thal
 
 ### 1. Whole-genome alignment using pannagram
 
-We aligned 27 long-read *A. thaliana* genome assemblies ([source](https://www.nature.com/articles/s41588-025-02293-0)) and 31 *A. lyrata* genome assemblies ([source](https://www.ncbi.nlm.nih.gov/nuccore/CAXDWP000000000.1)) to the TAIR10 reference genome with pannagram (https://github.com/iganna/pannagram).
+We aligned 27 long-read *A. thaliana* genome assemblies ([source](https://www.nature.com/articles/s41588-025-02293-0)) and 31 *A. lyrata* genome assemblies ([source](https://www.ncbi.nlm.nih.gov/nuccore/CAXDWP000000000.1)) to the TAIR10 reference genome and and to the MN47 reference genome with pannagram (https://github.com/iganna/pannagram).
 
 **Script:** `scripts/01_pannagram.sh`
 
 - **Input:** genome assemblies (FASTA), all stored in one folder
-- **Output:** reference-based multiple sequence alignment against TAIR10 as a reference
+- **Output:** reference-based multiple sequence alignment against TAIR10 as a reference or MN47 for A.lyrata genomes
 
-The script runs two alignments:
+The script runs three alignments:
 
 - **A. thaliana only:** the 27 *A. thaliana* genomes
+- **A. lyrata only:** the 31 *A. lyrata* genomes
 - **A. thaliana + A. lyrata:** the 27 *A. thaliana* genomes plus the 31 *A. lyrata* genomes
 
 Each run creates its own output folder. The alignment used in the next steps is in `features/msa/`.
@@ -41,14 +42,44 @@ python scripts/02_h5_to_vcf.py \
     --out chr1.vcf \
     --chrom Chr1
 ```
-### 3. Extract 4-fold degenerate sites from .vcf file 
-The diversity was measured in 4-fold degenerate (neutral) sites. In order to obtain these sites we used degenotate (https://github.com/harvardinformatics/degenotate) and annotation for TAIR10 and MN47. 
+### 3. Identify 4-fold degenerate sites
+
+In this study we measured diversity at 4-fold degenerate sites, which are treated as neutral. We identified these sites with [degenotate](https://github.com/harvardinformatics/degenotate), using the TAIR10 (*A. thaliana*) and MN47 (*A. lyrata*) annotations.
 
 **Script:** `scripts/03_degeannotate.sh`
 
-- **Input:** `.gtf` annotation and `.fasta` file for each genome 
-- **Output:** `.bed` file with sites degeneracy.
+- **Input:** genome `.fasta` and annotation `.gtf` for each reference
+- **Output:** `.bed` file with the degeneracy of each coding site
 
-### 4. Calculate nucleotide diversity (pi) in for *A. thaliana* and nucleotide divergence between *A. thaliana* and *A. lyrata*
+### 4. Identify 1:1 orthologs between *A. thaliana* and *A. lyrata*
+
+We estimated divergence between the two species in 1:1 orthologous genes. We identified these genes with the `simsearch` mode of [pannagram](https://github.com/iganna/pannagram).
+
+**Script:** `scripts/04_simsearch.sh`
+
+- **Input:** `.fasta` of all TAIR10 gene sequences
+- **Output:** 1:1 orthologous gene pairs between *A. thaliana* and *A. lyrata* (≥85% similarity, ≥90% coverage)
+
+We then process the `simsearch` output in R into a table of matching gene coordinates in the two genomes.
+
+**Script:** `scripts/simsearch_create_gene_table.Rmd`
+
+- **Input:** `simsearch` output from step 4
+- **Output:** table of 1:1 orthologs with coordinates in both genomes
+
+### 5. Nucleotide diversity (π) and divergence (d<sub>XY</sub>)
+
+We used [pixy](https://github.com/ksamuk/pixy) ([Korunes & Samuk, 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8044049/)) to calculate nucleotide diversity (π) within *A. thaliana* and *A. lyrata* and divergence (d<sub>XY</sub>) between *A. thaliana* and *A. lyrata*, both estimated in 4-fold degenerate sites.
+
+**Script:** `scripts/05_nucl_diversity_pixy.sh`
+
+- **Input:** all-sites `.vcf` (step 2), 4-fold degenerate sites `.bed` (step 3), 1:1 ortholog coordinates (step 4), and a population file (`.txt`: sample ID, population)
+- **Output:** pixy π and d<sub>XY</sub> tables
+
+Diversity pattern visualization: `scripts/diversity_within_27_athaliana_and31_lyrata.Rmd`
+
+
+
+
 
 
