@@ -14,7 +14,6 @@ library(scales, quietly = T)
 library(ggplot2, quietly = T)
 library(dplyr, quietly = T)
 library(gridExtra, quietly = T)
-library(ggpubr)
 library(tidyr)
 ```
 
@@ -81,7 +80,7 @@ pi4_fold_lyrata_thaliana_divergence <- pi4_fold_lyrata_thaliana_divergence %>% c
 pi4_fold_lyrata_thaliana_divergence <- pi4_fold_lyrata_thaliana_divergence %>%
   dplyr::rename(avg_dxy = avg_pi_window)
 
-## Combine dxy, pi in thaliana and pi il lyrata together 
+## Combine dxy, pi in thaliana and pi in lyrata together 
 combined_diversity_divergence <- pi_4fold_thal %>%
   inner_join(pi4_fold_lyrata, by = c("chromosome", "window_start", "window_end")) %>%
   inner_join(pi4_fold_lyrata_thaliana_divergence, by = c("chromosome", "window_start", "window_end"))
@@ -431,8 +430,6 @@ div_all <- combined_diversity_divergence %>%
 ```
 
 ```{r}
-library(patchwork)
-
 # correlation labels
 cor1 <- cor(div_all$avg_pi_window_thaliana, div_all$avg_pi_window_lyrata, use = "complete.obs")
 cor2 <- cor(div_all$avg_pi_window_thaliana, div_all$avg_dxy,              use = "complete.obs")
@@ -474,17 +471,26 @@ p3 <- ggplot(div_all, aes(avg_pi_window_lyrata, avg_dxy, color = dist_to_centrom
   theme_bw(base_size = 16) +
   theme(strip.background = element_blank())
 
-p4 <- p1 + p2 + p3 + plot_layout(ncol = 3, guides = "collect")
 
-ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/all_chr_dxy_pi_correlations.png",
-       plot = p4,
-       width = 300, height = 100, units = "mm", dpi = 600,
+## Save plots
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_lyrata_thaliana.png",
+       plot = p1,
+       width = 200, height = 200, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_thaliana_dxy.png",
+       plot = p2,
+       width = 200, height = 200, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_lyrata_dxy.png",
+       plot = p3,
+       width = 200, height = 200, units = "mm", dpi = 600,
        device = png, type = "cairo", bg = "white")
 ```
 ## Scatterplot with slope 
 ```{r}
-library(ggplot2)
-library(patchwork)
 get_stats <- function(data, x, y) {
   d <- data[, c(x, y)]
   d <- d[complete.cases(d), ]  # same rows used for cor + lm
@@ -540,15 +546,23 @@ annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -0.5,
   theme_bw(base_size = 16) +
   theme(strip.background = element_blank())
 
-p4 <- p1 + p2 + p3 + plot_layout(ncol = 3, guides = "collect")
-p4
-
-ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/all_chr_dxy_pi_correlations_with_slope.png",
-       plot = p4,
-       width = 300, height = 100, units = "mm", dpi = 600,
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_lyrata_thaliana_with_slope.png",
+       plot = p1,
+       width = 200, height = 200, units = "mm", dpi = 600,
        device = png, type = "cairo", bg = "white")
-```
 
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_thaliana_dxy_with_slope.png",
+       plot = p2,
+       width = 200, height = 200, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/pi_lyrata_dxy_with_slope.png",
+       plot = p3,
+       width = 200, height = 200, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+
+```
 
 ## Make boxplots peri-centromeres VS arms
 ```{r}

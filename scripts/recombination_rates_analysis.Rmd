@@ -34,7 +34,7 @@ non_overlapping <- non_overlapping %>%
 non_overlapping <- non_overlapping %>% dplyr::select(V1,V3,V4,avg_co)
 colnames(non_overlapping) <- c("Chr", "start", "end", "avg_co")
 non_overlapping$avg_co <-non_overlapping$avg_co*100
-#write.table(non_overlapping, "/groups/nordborg/projects/genome_organization/01_data/crossover_data_mercier/female_male1mb_non_overlapping_crossovers.csv", sep="\t",quote = F, row.names = F)
+write.table(non_overlapping, "/groups/nordborg/projects/genome_organization/01_data/crossover_data_mercier/female_male1mb_non_overlapping_crossovers.csv", sep="\t",quote = F, row.names = F)
 ```
 
 ```{r}
@@ -110,9 +110,6 @@ r_value <- cor(pi_co$avg_co, pi_co$avg_pi_window, use = "complete.obs")
 slope
 intercept
 r_value
-```
-## Add historical crossovers
-```{r}
 ```
 
 

@@ -9,298 +9,20 @@ library(readr)
 library(dplyr)
 library(data.table)
 library(ggplot2)
-```
-## Read data
-```{r}
-# Define paths 
-paths <- list(
-  sim_thal_caps = "/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_athal_crubella/Crubella_RAM_v1_85_90.table",
-  sim_lyr_caps = "/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_alyr_crubella/Crubella_RAM_v1_85_90.table",
-  sim_thal_lyr = "/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_athal_31lyr/MN47_85_90.table",
-  thal_gff = "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff",
-  caps_gff = "/groups/nordborg/projects/genome_organization/manuscript/01_data/capsella_genomes/Crubella_RAM_exon_v3.2.gff3",
-  moved_genes = "/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv",
-  sim_thal_caps_cnv = "/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_athal_crubella/Crubella_RAM_v1_85_90.cnt",
-  sim_lyr_caps_cnv = "/groups/nordborg/projects/genome_organization/manuscript/04_output/simsearch_alyr_crubella/Crubella_RAM_v1_85_90.cnt", 
-  orth_thal_lyr = "/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/coordinates_without_genes.csv"
-)
-
-# Read simsearch table and standardize coordinate column names
-read_sim <- function(path) {
-  dt <- fread(path)
-  setnames(
-    dt,
-    old = c("sequence", "genome.chr", "beg.genome", "end.genome"),
-    new = c("gene_id", "chr", "start", "end"),
-    skip_absent = TRUE
-  )
-
-  dt[, `:=`(
-    start = pmin(start, end),
-    end = pmax(start, end))]
-  dt[]
-}
-
-# Keep simsearch records only for query genes that have one Capsella copy.
-# The .cnt file contains one row per query gene and columns such as
-# lcl_Cr_1, ..., lcl_Cr_mt. Their row sum is the total Capsella copy number.
-read_one_copy_sim <- function(sim_path, cnv_path) {
-  cnv <- fread(cnv_path)
-  setnames(cnv, 1, "gene_id")
-  capsella_copy_columns <- grep("^lcl_Cr_", names(cnv), value = TRUE)
-  if (length(capsella_copy_columns) == 0) {
-    stop("No Capsella copy-number columns matching '^lcl_Cr_' were found.")
-  }
-  cnv[, total_capsella_copies := rowSums(.SD, na.rm = TRUE),
-      .SDcols = capsella_copy_columns]
-  one_copy_gene_ids <- cnv[total_capsella_copies == 1, gene_id]
-  sim <- read_sim(sim_path)
-  sim[gene_id %in% one_copy_gene_ids]
-}
+library(ggVennDiagram)
 ```
 
 ```{r}
-# Get one copy similar sequences 
-sim_thal_caps_one_copy <- read_one_copy_sim(
-  sim_path = paths$sim_thal_caps,
-  cnv_path = paths$sim_thal_caps_cnv)
+# Read data 
+transposed_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", header = T)
 
-sim_lyr_caps_one_copy <- read_one_copy_sim(
-  sim_path = paths$sim_lyr_caps,
-  cnv_path = paths$sim_lyr_caps_cnv)
+pannagram_1_1_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/orthologous_genes/pannagram_simsearch/lyata_mn47_v2_thaliana_tair10.csv", header=T)
 ```
-## Build 1:1 ortholog anchor tables (thaliana-lyrata)
-```{r}
-orth_thal_lyr <- fread(paths$orth_thal_lyr)
-setnames(orth_thal_lyr, c("thal_id", "lyr_start", "lyr_end", "lyr_chr"))
-thal_genes <- fread(paths$thal_gff)[V3 == "gene"]
-thal_genes[, gene_id := sub(".*ID=([^;]+);.*", "\\1", V9)]
-thal_genes[, gene_id := sub("Parent=([^.]+)\\..*", "\\1", gene_id)]
-thal_genes <- thal_genes[, .(thal_chr = V1, thal_start = V4, thal_end = V5, gene_id)]
-anchors <- merge(orth_thal_lyr, thal_genes, by.x = "thal_id", by.y = "gene_id")
-anchors[, thal_mid := (thal_start + thal_end) / 2]
-anchors[, lyr_mid  := (lyr_start  + lyr_end)  / 2]
-```
-## Overlap of the genomic coordinates (lyrata)
-```{r}
-# Get lyrata coordinates from capsella lyrata 
-sim_lyr_caps_one_copy[, `:=`(
-  lyr_scaffold = sub("^.*::([^:]+):.*$", "\\1", gene_id),
-  lyr_q_start  = as.integer(sub("^.*:([0-9]+)-([0-9]+)\\([+-]\\)$", "\\1", gene_id)),
-  lyr_q_end    = as.integer(sub("^.*:([0-9]+)-([0-9]+)\\([+-]\\)$", "\\2", gene_id))
-)]
-# Attach lyrata to single copy Capsela hit 
-## Lyrata coordinate ranges in the thaliana–lyrata anchor table
-lyr_query <- anchors[, .(
-  thal_id,
-  lyr_chr,
-  lyr_start = as.integer(lyr_start),
-  lyr_end   = as.integer(lyr_end)
-)]
-
-## Lyrata query ranges and their matched Capsella positions
-caps_lyr_hits <- sim_lyr_caps_one_copy[, .(
-  lyr_chr   = lyr_scaffold,
-  lyr_start = as.integer(lyr_q_start),
-  lyr_end   = as.integer(lyr_q_end),
-  caps_chr_via_lyr = chr,
-  caps_start_via_lyr = as.integer(start),
-  caps_end_via_lyr = as.integer(end)
-)]
-
-setkey(caps_lyr_hits, lyr_chr, lyr_start, lyr_end)
-## Match anchor coordinates to simsearch-query coordinates
-lyr_matches <- foverlaps(
-  x = lyr_query,
-  y = caps_lyr_hits,
-  by.x = c("lyr_chr", "lyr_start", "lyr_end"),
-  by.y = c("lyr_chr", "lyr_start", "lyr_end"),
-  type = "any",
-  nomatch = NA
-)
-# How many matches we have?
-lyr_match_summary <- lyr_matches[, .N, by = thal_id]
-table(lyr_match_summary$N)
-
-
-multiple_lyr_matches <- lyr_match_summary[N > 1]
-
-lyr_matches[thal_id %in% multiple_lyr_matches$thal_id][order(thal_id)]
-# Drop multiple matches in lyrata
-keep_ids <- lyr_match_summary[N == 1, thal_id]
-lyr_matches_one <- lyr_matches[
-  thal_id %in% keep_ids & !is.na(caps_chr_via_lyr)
-]
-lyr_matches_one[, caps_mid_via_lyr :=
-  (caps_start_via_lyr + caps_end_via_lyr) / 2
-]
-# Merge into anchors table lyrata-derived Capsella positions
-anchors <- merge(
-  anchors,
-  lyr_matches_one[, .(
-    thal_id,
-    caps_chr_via_lyr,
-    caps_start_via_lyr,
-    caps_end_via_lyr,
-    caps_mid_via_lyr
-  )],
-  by = "thal_id",
-  all.x = TRUE
-)
-
-# Merge into anchors thaliana-derived Capsella positions
-sim_thal_caps_one_copy[, caps_mid_via_thal := (start + end) / 2]
-anchors <- merge(
-  anchors,
-  sim_thal_caps_one_copy[, .(
-    thal_id = gene_id,
-    caps_chr_via_thal = chr,
-    caps_start_via_thal = start,
-    caps_end_via_thal = end,
-    caps_mid_via_thal
-  )],
-  by = "thal_id",
-  all.x = TRUE
-)
-
-head(anchors[, .(thal_id, thal_chr, thal_mid, lyr_chr, lyr_mid,
-                  caps_chr_via_thal, caps_mid_via_thal,
-                  caps_chr_via_lyr, caps_mid_via_lyr)])
-```
-## Neighborhood preservation scoring
-Are the genes that are close together in thaliana/lyrata also ordered consistently (left/right) in Capsella
-```{r}
-check_neighborhood <- function(mid, chr, k = 3) {
-  n <- length(mid)
-  n_present   <- integer(n)
-  n_preserved <- integer(n)
-  for (i in seq_len(n)) {
-    idx <- (i - k):(i + k)
-    idx <- idx[idx >= 1 & idx <= n & idx != i]
-    idx <- idx[!is.na(chr[idx]) & !is.na(chr[i]) & chr[idx] == chr[i]]
-    n_present[i] <- length(idx)
-    if (length(idx) == 0) { n_preserved[i] <- NA; next }
-    n_preserved[i] <- sum(sign(idx - i) == sign(mid[idx] - mid[i]))
-  }
-  data.table(n_present = n_present, n_preserved = n_preserved)
-}
-```
-## Thaliana vs capsella hits order
-```{r}
-setorder(anchors, thal_chr, thal_mid)
-res_thal_vs_caps <- anchors[, check_neighborhood(caps_mid_via_thal, caps_chr_via_thal, k = 3), by = thal_chr]
-
-anchors[, `:=`(
-  thal_caps_n_present   = res_thal_vs_caps$n_present,
-  thal_caps_n_preserved = res_thal_vs_caps$n_preserved
-)]
-anchors[, thal_caps_frac_preserved := thal_caps_n_preserved / thal_caps_n_present]
-```
-## Lyrata order vs its own Capsella hit:
-```{r}
-setorder(anchors, lyr_chr, lyr_mid)
-
-res_lyr_vs_caps <- anchors[, check_neighborhood(caps_mid_via_lyr, caps_chr_via_lyr, k = 3), by = lyr_chr]
-
-anchors[, `:=`(
-  lyr_caps_n_present   = res_lyr_vs_caps$n_present,
-  lyr_caps_n_preserved = res_lyr_vs_caps$n_preserved
-)]
-anchors[, lyr_caps_frac_preserved := lyr_caps_n_preserved / lyr_caps_n_present]
-```
-
-```{r}
-anchors[, thal_matches_ancestral := thal_caps_frac_preserved >= 0.5]
-anchors[, lyr_matches_ancestral  := lyr_caps_frac_preserved  >= 0.5]
-
-anchors[, polarization := fifelse(
-  thal_matches_ancestral & !lyr_matches_ancestral, "lyrata_derived",
-  fifelse(!thal_matches_ancestral & lyr_matches_ancestral, "thaliana_derived",
-  fifelse(thal_matches_ancestral & lyr_matches_ancestral, "both_ancestral",
-          "ambiguous")))]
-
-table(anchors$polarization, useNA = "always")
-## thaliana derived - Lyrata's order matches Capsella (ancestral), but thaliana's doesn't. This means thaliana is the one that rearranged at this locus
-## lyrata derived - thaliana matches Capsella, lyrata doesn't. Lyrata rearranged, thaliana kept the ancestral orders
-```
-## Figures 
-```{r}
-## Build per-chromosome thaliana rank (window index for plotting)
-setorder(anchors, thal_chr, thal_mid)
-anchors[, thal_rank := seq_len(.N), by = thal_chr]
-
-anchors[, is_focal := thal_id %in% moved_genes$gene_id]
-
-plot_local_synteny <- function(anchors, focal_id, k = 3) {
-
-  chr_focal <- anchors[thal_id == focal_id, thal_chr]
-  if (length(chr_focal) == 0) {
-    message("Skipping ", focal_id, " — gene not found in anchors")
-    return(invisible(NULL))
-  }
-
-  win <- anchors[thal_chr == chr_focal]
-  focal_rank <- win[thal_id == focal_id, thal_rank]
-  win <- win[thal_rank %in% (focal_rank - k):(focal_rank + k)]
-  win[, window_pos := thal_rank - focal_rank]   # 0 = focal gene, negative/positive = neighbors
-  win[, point_type := fifelse(is_focal, "focal", "neighbor")]
-
-  ## Long format: one row per (gene x comparison)
-  long_dt <- rbindlist(list(
-    win[, .(window_pos, point_type, comparison = "thaliana vs Capsella",
-            y = caps_mid_via_thal, scaffold = caps_chr_via_thal)],
-    win[, .(window_pos, point_type, comparison = "lyrata vs Capsella",
-            y = caps_mid_via_lyr,  scaffold = caps_chr_via_lyr)],
-    win[, .(window_pos, point_type, comparison = "thaliana vs lyrata",
-            y = lyr_mid,           scaffold = lyr_chr)]
-  ))
-
-  if (all(is.na(long_dt$y))) {
-    message("Skipping ", focal_id, " — no data in any comparison")
-    return(invisible(NULL))
-  }
-
-  long_dt[, pt_color := fcase(
-    is.na(y),                  "no_hit",
-    point_type == "focal",     "focal",
-    default =                  "neighbor"
-  )]
-
-  p <- ggplot(long_dt, aes(x = window_pos, y = y)) +
-    geom_line(data = long_dt[!is.na(y)], aes(group = comparison), color = "grey70") +
-    geom_point(aes(color = pt_color), size = 3) +
-    facet_wrap(~ comparison, scales = "free_y", ncol = 3) +
-    scale_color_manual(
-      values = c(focal = "red", neighbor = "black", no_hit = "blue"),
-      labels = c(focal = "focal", neighbor = "neighbor", no_hit = "no hit")
-    ) +
-    labs(
-      x = "Position relative to focal gene (thaliana order)",
-      y = "Genomic coordinate",
-      color = "Gene type",
-      title = paste("Local synteny:", focal_id)
-    ) +
-    theme_minimal(base_size = 12) +
-    theme(legend.position = "bottom")
-
-  print(p)
-}
-
-## Run for all moved genes
-for (gene in moved_genes$gene_id) {
-  plot_local_synteny(anchors, gene, k = 3)
-}
-```
-
-
-
-
-
 
 ## Create a bed file with +/- 10 Kb flanking region for transposed genes (thaliana)
 ```{r}
 head(transposed_genes)
-transposed_genes_thaliana <- transposed_genes %>% select(chr_thal,star_thal,end_thal,gene_id)
+transposed_genes_thaliana <- transposed_genes %>% dplyr::select(chr_thal,star_thal,end_thal,gene_id)
 ## Add +/- 10 KB to the both sides 
 transposed_genes_thaliana$star_thal <- transposed_genes_thaliana$star_thal-10000
 transposed_genes_thaliana$end_thal <- transposed_genes_thaliana$end_thal+10000
@@ -309,22 +31,29 @@ write.table(transposed_genes_thaliana,"/groups/nordborg/projects/genome_organiza
 ## Create a bed file with +/- 10 Kb flanking region for transposed genes (lyrata)
 ```{r}
 transposed_genes_lyrata <- filter(pannagram_1_1_genes, thaliana_id %in% transposed_genes$gene_id)
-transposed_genes_lyrata <- transposed_genes_lyrata %>% select(lyrata_chr,lyrata_start,lyrata_end,thaliana_id)
+transposed_genes_lyrata <- transposed_genes_lyrata %>% dplyr::select(lyrata_chr,lyrata_start,lyrata_end,thaliana_id)
 ## Add +/- 10 KB to the both sides 
 transposed_genes_lyrata$lyrata_start <- transposed_genes_lyrata$lyrata_start-10000
 transposed_genes_lyrata$lyrata_end <- transposed_genes_lyrata$lyrata_end+10000
 write.table(transposed_genes_lyrata,"/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/lyrata_98transposed_genes_10Kbplusmin.bed",quote     = F, row.names = F,col.names = F, sep="\t")
 ```
+## Check overlap with lyrata annotation
+```{r}
+lyrata_annotation <- read.table(
+  "/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/GCA_944990045.1_MN47_v2_genomic.gtf",
+  sep = "\t", quote = "", comment.char = "#", header = FALSE,
+  col.names = c("seqname", "source", "feature", "start", "end",
+                "score", "strand", "frame", "attributes"))
+transposed_genes_lyrata
+```
+
 ## Create a bed file with +/- 10 Kb flanking region for transposed genes (capsella)
 ```{r}
 # First calculate how many 1-1 orthologous genes defined in 3 capsella genomes
 capsella_transposed_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_moved_gene_capsella_genomes.txt", sep="\t", header=T)
 # How many genes have enteries in all 3 capsella genomes 
-library(ggVennDiagram)
-
 # function to check if a gene has a real hit (not NA, not "Not found")
 has_hit <- function(x) !is.na(x) & x != "Not found"
-library(dplyr)
 set_grandiflora <- capsella_transposed_genes %>% filter(has_hit(C.grandiflora)) %>% pull(A.thaliana)
 set_rubella     <- capsella_transposed_genes %>% filter(has_hit(C.rubella))     %>% pull(A.thaliana)
 set_orientalis  <- capsella_transposed_genes %>% filter(has_hit(C.orientalis))  %>% pull(A.thaliana)
@@ -349,16 +78,12 @@ bar_dt <- data.frame(
 
 ggplot(bar_dt, aes(x = species, y = n_found, fill = species)) +
   geom_bar(stat = "identity") +
-  geom_hline(yintercept = length(set_thaliana), linetype = "dashed", color = "black") +
-  annotate("text", x = 0.6, y = length(set_thaliana) + 1,
-           label = paste("total:", length(set_thaliana)), hjust = 0) +
   geom_text(aes(label = n_found), vjust = -0.5) +
   scale_fill_manual(values = c("steelblue", "coral", "lightgreen", "purple")) +
   scale_x_discrete(limits = c("C.grandiflora", "C.rubella", "C.orientalis", "All 3 Capsella")) +
   labs(
     x     = "Capsella species",
-    y     = "Number of thaliana transposed genes with ortholog",
-    title = "Ortholog presence of thaliana transposed genes in Capsella"
+    y     = "Number of transposed genes with ortholog",
   ) +
   theme_minimal(base_size = 16) +
   theme(legend.position = "none")
@@ -374,9 +99,26 @@ capsella_rub_annotation$id <- gsub("ID=", "", capsella_rub_annotation$id)
 capsella_transposed_genes_with_coordinates <- inner_join(capsella_rub_annotation,capsella_transposed_genes, by=c("id"="C.rubella"))
 capsella_transposed_genes_with_coordinates$start <- capsella_transposed_genes_with_coordinates$start-10000
 capsella_transposed_genes_with_coordinates$stop <- capsella_transposed_genes_with_coordinates$stop+10000
-capsella_transposed_genes_with_coordinates <- capsella_transposed_genes_with_coordinates %>% select(chromosome,start,stop,A.thaliana)
+capsella_transposed_genes_with_coordinates <- capsella_transposed_genes_with_coordinates %>% dplyr::select(chromosome,start,stop,A.thaliana)
 write.table(capsella_transposed_genes_with_coordinates,"/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/capsella_98transposed_genes_10Kbplusmin.bed",quote     = F, row.names = F,col.names = F, sep="\t")
 ```
+## Create a set of genes which intersect (Capsella rubella 1 copy, thaliana, lyrata)
+```{r}
+capsella_transposed_genes_wo_na <- na.omit(capsella_transposed_genes)
+capsella_rub_single_copy <- capsella_transposed_genes_wo_na %>%
+  filter(!grepl(",", C.rubella),
+         C.rubella != "Not found",
+         !is.na(C.rubella))
+## Filter to have correspondance to lyrata as well
+capsella_rub_single_copy <- capsella_rub_single_copy %>%
+  filter(A.thaliana %in% pannagram_1_1_genes$thaliana_id)
+
+capsella_not_in_pannagram <- capsella_rub_single_copy %>%
+  filter(!A.thaliana %in% pannagram_1_1_genes$thaliana_id)
+
+summary(capsella_not_in_pannagram$A.thaliana %in% transposed_genes$gene_id)
+```
+
 ## Make dotplots for capsella, thaliana and lyrata
 ```{r}
 install.packages("pannagram")

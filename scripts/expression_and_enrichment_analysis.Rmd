@@ -12,11 +12,15 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 library(tidyverse)
 library(scales)
+library(clusterProfiler)
+library(data.table)
+library(tidyr)
+library(dplyr)
 ```
 
 #Read expression counts for 4 tissues 
 ```{r}
-expression_4_tissues <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/expression_thaliana/counts.genes_and_SVs_alexandra.bed", header = T)
+expression_4_tissues <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/expression_thaliana/GSE226691_TPMs.4_tissues.Araport11_annotation.bed", header = T)
 ```
 Clean up dataset
 ```{r}
@@ -43,7 +47,7 @@ expression_3_tissues_log2[-1] <- lapply(expression_3_tissues_log2[-1], function(
 Intersect with pericentromeric and arm gene defenition 
 ```{r}
 #Read genes with location 
-genes_athaliana <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff") %>% filter(V3=="gene")
+genes_athaliana <- fread("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/TAIR10_GFF3_genes_transposons.gff") %>% filter(V3=="gene")
 genes_athaliana$gene_id <- sub(".*ID=([^;]+);.*", "\\1", genes_athaliana$V9)
 genes_athaliana[, gene_id_clean := sub("Parent=([^.]+)\\..*", "\\1", gene_id)]
 genes_athaliana <- genes_athaliana %>% dplyr::select(V1,V4,V5,gene_id_clean)
@@ -213,11 +217,72 @@ universe <- genes_per_region %>% pull(gene) %>% unique()
 
 ```
 
-
 ```{r}
-library(gsea)
+library(dplyr)
+library(clusterProfiler)
+library(org.At.tair.db)
+library(enrichplot)
+library(ggplot2)
+
+out <- "/groups/nordborg/projects/genome_organization/manuscript/04_output/expression_3_tissues/"
+clean <- function(x) unique(toupper(sub("\\..*$", "", x)))   # AT1G01010.1 -> AT1G01010
+
+genes_per_region <- df_long %>% distinct(gene, region)
+genes_arm  <- clean(genes_per_region$gene[genes_per_region$region == "arm"])
+genes_peri <- clean(genes_per_region$gene[genes_per_region$region == "peri-centromere"])
+universe   <- clean(genes_per_region$gene)
+
+# GO enrichment for both regions
+run_go <- function(genes) {
+  enrichGO(gene          = genes,
+           universe      = universe,
+           OrgDb         = org.At.tair.db,
+           keyType       = "TAIR",
+           ont           = "ALL",          # BP + MF + CC
+           pAdjustMethod = "BH",
+           pvalueCutoff  = 0.1,
+           qvalueCutoff  = 0.1)
+}
 ```
 
+```{r}
+library(dplyr)
+library(ggplot2)
+
+## Fold enrichment
+ratio <- function(x) sapply(strsplit(x, "/"), \(v) as.numeric(v[1]) / as.numeric(v[2]))
+
+go_df <- bind_rows(
+  as.data.frame(go_arm)  %>% mutate(region = "Arm"),
+  as.data.frame(go_peri) %>% mutate(region = "Pericentromere")
+) %>%
+  mutate(fold_enrichment = ratio(GeneRatio) / ratio(BgRatio))
+
+go_df <- go_df[go_df$ONTOLOGY=="MF",]
+# top terms per region and ontology
+top_terms <- go_df %>%
+  group_by(region, ONTOLOGY) %>%
+  slice_min(p.adjust, n = 3) %>%
+  pull(ID) %>% unique()
+
+# Fix long description
+go_df$Description[go_df$Description == "acyltransferase activity, transferring groups other than amino-acyl groups"] <- "acyltransferase activity"
+p <- go_df %>%
+  filter(ID %in% top_terms) %>%
+  ggplot(aes(region, reorder(Description, fold_enrichment),
+             size = Count, colour = -log10(p.adjust))) +
+  geom_point() +
+  scale_size(range = c(4, 12)) +      # min and max point size (default is c(1, 6))
+  scale_colour_viridis_c() +
+  labs(x = NULL, y = NULL, size = "Genes", colour = "-log10 FDR",
+       title = "GO:MF") +
+  theme_bw(base_size = 16)
+
+ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/go_arm_pericentromere.png",
+       plot = p,
+       width = 300, height = 200, units = "mm", dpi = 600,
+       device = png, type = "cairo", bg = "white")
+```
 
 
 ### Analyze lyrata expression

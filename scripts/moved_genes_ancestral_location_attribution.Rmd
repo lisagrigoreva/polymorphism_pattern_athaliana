@@ -1,0 +1,195 @@
+---
+title: "moved_genes_ancestral_location"
+output: html_document
+date: "2026-08-12"
+---
+```{r setup, include=FALSE}
+library(readr)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(ggVennDiagram)
+library(GenomicRanges)
+```
+
+```{r}
+# Read transposed genes
+transposed_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", header = T)
+```
+
+## Create a bed file with +/- 10 Kb flanking region for transposed genes (thaliana)
+```{r}
+transposed_genes_thaliana <- transposed_genes %>% dplyr::select(chr_thal,star_thal,end_thal,gene_id)
+## Add +/- 10 KB to the both sides 
+transposed_genes_thaliana$star_thal <- transposed_genes_thaliana$star_thal-10000
+transposed_genes_thaliana$end_thal <- transposed_genes_thaliana$end_thal+10000
+write.table(transposed_genes_thaliana,"/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/thaliana_98transposed_genes_10Kbplusmin.bed",quote     = F, row.names = F,col.names = F, sep="\t")
+```
+## Create a bed file with +/- 10 Kb flanking region for transposed genes in A. lyrata 
+```{r}
+# Read lyrata annotation
+lyrata_annotation <- read.table(
+  "/groups/nordborg/projects/genome_organization/manuscript/01_data/mn47/GCA_944990045.1_MN47_v2_genomic.gtf",
+  sep = "\t", quote = "", comment.char = "#", header = FALSE,
+  col.names = c("seqname", "source", "feature", "start", "end",
+                "score", "strand", "frame", "attributes"))
+
+transposed_genes_lyrata <- transposed_genes %>% dplyr::select(gene_id,lyrata_start,lyrata_end,lyrata_chr)
+genes <- lyrata_annotation %>%
+  filter(feature == "gene") %>%
+  mutate(
+    lyrata_id = str_match(attributes, 'gene_id "([^"]+)"')[, 2],
+    locus_tag = str_match(attributes, 'locus_tag "([^"]+)"')[, 2]
+  )
+# Change chr ids in lyrata
+genes <- genes %>%
+  mutate(lyrata_chr = case_when(
+    seqname == "CALYLY010000001.1" ~ "Chr1",
+    seqname == "CALYLY010000112.1" ~ "Chr2",
+    seqname == "CALYLY010000223.1" ~ "Chr3",
+    seqname == "CALYLY010000334.1" ~ "Chr4",
+    seqname == "CALYLY010000445.1" ~ "Chr5",
+    seqname == "CALYLY010000556.1" ~ "Chr6",
+    seqname == "CALYLY010000667.1" ~ "Chr7",
+    seqname == "CALYLY010000762.1" ~ "Chr8",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(lyrata_chr))
+
+## Build ranges and intersect with annotation ##
+gr_annot <- GRanges(genes$lyrata_chr,
+                    IRanges(genes$start, genes$end),
+                    lyrata_id = genes$lyrata_id)
+
+tg <- transposed_genes_lyrata %>% filter(!is.na(lyrata_start))
+gr_tg <- GRanges(tg$lyrata_chr,
+                 IRanges(pmin(tg$lyrata_start, tg$lyrata_end),
+                         pmax(tg$lyrata_start, tg$lyrata_end)),
+                 gene_id = tg$gene_id)
+
+#Find overlaps
+hits <- findOverlaps(gr_tg, gr_annot, ignore.strand = TRUE)
+
+result <- data.frame(
+  gene_id      = gr_tg$gene_id[queryHits(hits)],
+  lyrata_chr   = as.character(seqnames(gr_tg))[queryHits(hits)],
+  lyrata_start = start(gr_tg)[queryHits(hits)],
+  lyrata_end   = end(gr_tg)[queryHits(hits)],
+  lyrata_id    = gr_annot$lyrata_id[subjectHits(hits)],
+  annot_start  = start(gr_annot)[subjectHits(hits)],
+  annot_end    = end(gr_annot)[subjectHits(hits)],
+  overlap_bp   = width(pintersect(gr_tg[queryHits(hits)],
+                                  gr_annot[subjectHits(hits)]))
+)
+
+# Best overlap per gene id 
+result_best <- result %>%
+  group_by(gene_id) %>%
+  slice_max(overlap_bp, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+overlap <- inner_join(transposed_genes_lyrata,
+                   result_best %>% dplyr::select(gene_id, lyrata_id, overlap_bp,annot_start,annot_end),
+                   by = "gene_id") 
+
+transposed_genes_lyrata <- overlap %>% dplyr::select(lyrata_chr,annot_start,annot_end,gene_id)
+## Add +/- 10 KB to the both sides 
+transposed_genes_lyrata$annot_start <- transposed_genes_lyrata$annot_start-10000
+transposed_genes_lyrata$annot_end <- transposed_genes_lyrata$annot_end+10000
+
+## Move chr back to the original naming 
+transposed_genes_lyrata <- transposed_genes_lyrata %>%
+  mutate(lyrata_chr = case_when(
+    lyrata_chr == "Chr1" ~"CALYLY010000001.1",
+    lyrata_chr == "Chr2" ~ "CALYLY010000112.1",
+    lyrata_chr == "Chr3" ~ "CALYLY010000223.1",
+    lyrata_chr == "Chr4" ~ "CALYLY010000334.1",
+    lyrata_chr == "Chr5" ~ "CALYLY010000445.1",
+    lyrata_chr == "Chr6" ~ "CALYLY010000556.1",
+    lyrata_chr == "Chr7" ~ "CALYLY010000667.1",
+    lyrata_chr == "Chr8" ~ "CALYLY010000762.1")) 
+
+
+write.table(transposed_genes_lyrata,"/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/lyrata_thaliana_transposed_genes_10Kbplusmin.bed",quote     = F, row.names = F,col.names = F, sep="\t")
+```
+
+## Create a bed file with +/- 10 Kb flanking region for transposed genes in Capsella
+```{r}
+# First calculate how many 1-1 orthologous genes defined in 3 capsella genomes
+capsella_transposed_genes <- read.table("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_moved_gene_capsella_genomes.txt", sep="\t", header=T)
+# How many genes have enteries in all 3 capsella genomes 
+# function to check if a gene has a real hit (not NA, not "Not found")
+has_hit <- function(x) !is.na(x) & x != "Not found"
+set_grandiflora <- capsella_transposed_genes %>% filter(has_hit(C.grandiflora)) %>% pull(A.thaliana)
+set_rubella     <- capsella_transposed_genes %>% filter(has_hit(C.rubella))     %>% pull(A.thaliana)
+set_orientalis  <- capsella_transposed_genes %>% filter(has_hit(C.orientalis))  %>% pull(A.thaliana)
+
+gene_sets <- list(
+  C.grandiflora = set_grandiflora,
+  C.rubella     = set_rubella,
+  C.orientalis  = set_orientalis
+)
+```
+
+```{r}
+bar_dt <- data.frame(
+  species = c("C.grandiflora", "C.rubella", "C.orientalis", "All 3 Capsella"),
+  n_found = c(
+    length(set_grandiflora),
+    length(set_rubella),
+    length(set_orientalis),
+    length(Reduce(intersect, gene_sets))
+  )
+)
+
+ggplot(bar_dt, aes(x = species, y = n_found, fill = species)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n_found), vjust = -0.5) +
+  scale_fill_manual(values = c("steelblue", "coral", "lightgreen", "purple")) +
+  scale_x_discrete(limits = c("C.grandiflora", "C.rubella", "C.orientalis", "All 3 Capsella")) +
+  labs(
+    x     = "Capsella species",
+    y     = "Number of transposed genes with ortholog",
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(legend.position = "none")
+
+```
+## Get bed file for capsella rubella
+```{r}
+capsella_rub_annotation <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/capsella_genomes/Crubella_RAM_exon_v3.2.gff3")
+colnames(capsella_rub_annotation) <- c("chromosome", "genome", "type", "start", "stop", "v6", "orientation", "v8", "id")
+capsella_rub_annotation <- capsella_rub_annotation %>% filter(type == "gene")
+capsella_rub_annotation$id <- gsub("ID=", "", capsella_rub_annotation$id)
+## Select orthologous genes 
+capsella_transposed_genes_with_coordinates <- inner_join(capsella_rub_annotation,capsella_transposed_genes, by=c("id"="C.rubella"))
+capsella_transposed_genes_with_coordinates$start <- capsella_transposed_genes_with_coordinates$start-10000
+capsella_transposed_genes_with_coordinates$stop <- capsella_transposed_genes_with_coordinates$stop+10000
+capsella_transposed_genes_with_coordinates <- capsella_transposed_genes_with_coordinates %>% dplyr::select(chromosome,start,stop,A.thaliana)
+write.table(capsella_transposed_genes_with_coordinates,"/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/capsella_rubella_transposed_genes_10Kbplusmin.bed",quote     = F, row.names = F,col.names = F, sep="\t")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

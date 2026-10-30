@@ -19,22 +19,21 @@ library(ggplot2)
 library(dplyr)
 library(tidyr)
 
-# --- Step 1: Bin per-gene omega into 300 kb windows ---
+# Bin per-gene omega into 300 kb windows
 dnds_windowed <- dnds_table %>%
   filter(omega <= 1) %>%                          # remove outliers
   mutate(window_start = floor(start / 3e5) * 3e5,
          window_end   = window_start + 3e5) %>%
   group_by(chromosome, window_start, window_end) %>%
-  summarise(avg_omega = mean(omega, na.rm = TRUE), .groups = "drop")
+  dplyr::summarise(avg_omega = mean(omega, na.rm = TRUE), .groups = "drop")
 
-# --- Step 2: Rename centromere column to match dnds_windowed ---
+#  Rename centromere column to match dnds_windowed
 centromeres_renamed <- centromeres %>%
-  rename(chromosome = chrom)
+  dplyr::rename(chromosome = chrom)
 
-# --- Step 3: Join centromeres, mask centromeric windows, compute ribbon ---
-# --- Updated Step 3: no ±250000 buffer ---
+# Step 3: Join centromeres, mask centromeric windows, compute ribbon 
 dnds_all <- dnds_windowed %>%
-  left_join(centromeres_renamed %>% select(chromosome, centr_start = start, centr_stop = stop),
+  left_join(centromeres_renamed %>% dplyr::select(chromosome, centr_start = start, centr_stop = stop),
             by = "chromosome") %>%
   mutate(avg_omega = ifelse(window_start <= centr_stop &
                             window_end   >= centr_start,
@@ -51,7 +50,7 @@ dnds_all <- dnds_windowed %>%
   ) %>%
   ungroup()
 
-# --- Step 4: Plot ---
+# Plot
 p <- ggplot(dnds_all, aes(x = window_start / 1e6, y = avg_omega)) +
   geom_ribbon(aes(ymin = med_omega, ymax = above),
               fill = "#053061", alpha = 0.3, na.rm = TRUE) +
@@ -75,14 +74,14 @@ p <- ggplot(dnds_all, aes(x = window_start / 1e6, y = avg_omega)) +
 
 p
 
-# --- Step 5: Save ---
 ggsave("dnds_all_chromosomes.png",
        plot = p,
        width = 300, height = 100, units = "mm", dpi = 600,
        bg = "white")
 ```
+
 ```{r}
-# --- Step 3: with ±250000 buffer (exactly like the π plot) ---
+# Match pi plot 
 dnds_all <- dnds_windowed %>%
   left_join(centromeres_renamed %>% select(chromosome, centr_start = start, centr_stop = stop),
             by = "chromosome") %>%
@@ -101,7 +100,7 @@ dnds_all <- dnds_windowed %>%
   ) %>%
   ungroup()
 
-# --- Plot (exactly the π style) ---
+#Plot
 p <- ggplot(dnds_all, aes(x = window_start / 1e6, y = avg_omega)) +
   geom_smooth(data = dnds_all %>% filter(region == "left"),
               method = "loess", span = 0.2, color = "#f4a582", se = FALSE, na.rm = TRUE) +

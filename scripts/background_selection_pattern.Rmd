@@ -154,7 +154,6 @@ ggsave("/groups/nordborg/projects/genome_organization/manuscript/04_output/figur
 ```
 
 ```{r}
-# make sure columns are numeric
 background_selection$pi_obs_rel  <- as.numeric(background_selection$pi_obs_rel)
 background_selection$pi_pred_rel <- as.numeric(background_selection$pi_pred_rel)
 
