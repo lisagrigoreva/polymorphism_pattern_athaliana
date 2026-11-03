@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=dotplots
-#SBATCH --mem=30G
+#SBATCH --mem=50G
 #SBATCH --time=03:00:00
 #SBATCH --output=logs/%A_%a.out
 set -euo pipefail
@@ -17,7 +17,7 @@ cd "$BASE"
 # Get genes transposed
 #ls fasta_thaliana_transposed_genes | sed 's/\.fa$//' > genes.txt
 # Run by SLURM: one gene per task, all three pairs
-gene=$(sed -n "${SLURM_ARRAY_TASK_ID}p" genes.txt)
+gene=$(sed -n "${SLURM_ARRAY_TASK_ID}p" genes2.txt)
 echo "Gene: $gene"
 
 Rscript $RSCRIPT $gene $THAL $LYR  $OUT thal_vs_lyr

@@ -243,6 +243,9 @@ run_go <- function(genes) {
            pvalueCutoff  = 0.1,
            qvalueCutoff  = 0.1)
 }
+
+go_arm <- run_go(genes_arm)
+go_peri <- run_go(genes_peri)
 ```
 
 ```{r}

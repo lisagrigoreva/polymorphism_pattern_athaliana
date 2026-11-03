@@ -4,44 +4,41 @@ output: html_document
 date: "2026-10-30"
 ---
 
-##### Visualization of the dotplots ####
-## Read genes with lyrata ancestral location
+# Read genes with confirmed ancestral state
 ```{r}
-genes_with_ancestral_loc <- read.csv("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/genes_conf_ancestral_loc.txt", header=F)
-colnames(genes_with_ancestral_loc) <- "gene_id"
-moved_genes <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", sep="\t")
-moved_genes <- moved_genes[moved_genes$gene_id %in% genes_with_ancestral_loc$gene_id, ]
+genes_with_ancestral_loc <- fread("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/dotplots_thaliana_lyrata_capsella_2/visual_inspection_result.txt", header=T)
+# Select genes wchih have detected ancestral state 
+genes_with_ancestral_loc <- genes_with_ancestral_loc %>% filter(ancestral_state!="NA")
+
+moved_genes_all <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", sep="\t")
+# Filter genes from the table 
+moved_genes <- moved_genes_all[moved_genes_all$gene_id %in% genes_with_ancestral_loc$A.thaliana, ]
 ```
 
-## Gene moves visualization
+## Gene moves visualization (all moved genes)
 ```{r}
-## Make circulat plot
-# Only between-chromosome gene movements
 library(data.table)
 library(circlize)
 
-setDT(moved_genes)
+setDT(moved_genes_all)
 
 to_chr <- function(x) paste0("Chr", sub("^Chr", "", as.character(x)))
 
 thaliana_levels <- paste0("Chr", 1:5)
 lyrata_levels   <- paste0("Chr", 1:8)
+# Df with moved genes
+moves <- moved_genes[, .(
+  gene_id,
+  chr_thal   = factor(to_chr(chr_thal),   levels = thaliana_levels),
+  lyrata_chr = factor(to_chr(lyrata_chr), levels = lyrata_levels)
+)]
 
-# ---- keep only inter-chromosomal moves ----
-moves <- moved_genes[
-  to_chr(chr_thal) != to_chr(lyrata_chr),
-  .(gene_id,
-    chr_thal   = factor(to_chr(chr_thal),   levels = thaliana_levels),
-    lyrata_chr = factor(to_chr(lyrata_chr), levels = lyrata_levels))
-]
-
-# ---- count unique genes: source (lyrata) -> destination (thaliana) ----
+# Count movements 
 movement_counts <- moves[
   , .(n_genes = uniqueN(gene_id)),
   by = .(lyrata_chr, chr_thal)
 ]
 
-# Matrix rows = source (lyrata), cols = destination (thaliana)
 movement_matrix <- as.matrix(
   dcast(
     movement_counts,
@@ -55,7 +52,9 @@ movement_matrix <- as.matrix(
 rownames(movement_matrix) <- paste0("A.lyr_", lyrata_levels)
 colnames(movement_matrix) <- paste0("A.thal_", thaliana_levels)
 
-# ---- colors ----
+cat("Genes plotted:", sum(movement_matrix), "\n")   # CHANGED: sanity check
+
+# Define colours
 shared_colors_base <- c(
   "Chr1" = "#b35806", "Chr2" = "#e08214", "Chr3" = "#f1b6da", "Chr4" = "#542788",
   "Chr5" = "#4d9221", "Chr6" = "#d73027", "Chr7" = "#fee090", "Chr8" = "#80cdc1"
@@ -74,8 +73,8 @@ link_col <- matrix(
 
 # Plot
 png(
-  filename = "/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/circle_diagram.png",
-  width = 200, height = 100, units = "mm", res = 600, type = "cairo", bg = "white"
+  filename = "/groups/nordborg/projects/genome_organization/manuscript/04_output/figures/circle_diagram_all_moved.png",
+  width = 120, height = 120, units = "mm", res = 600, type = "cairo", bg = "white"
 )
 circos.clear()
 chordDiagram(
@@ -168,17 +167,8 @@ pi_both_species <- inner_join(pi_4fold_thal,pi4_fold_lyrata, by=c("chromosome", 
 ```
 ## Assign moved genes to the compartments 
 ```{r}
-moved_genes <- read.csv2("/groups/nordborg/projects/genome_organization/manuscript/04_output/syntenic_and_tranposed_genes/98_1to1_orth_moved_genes.csv", sep="\t")
-```
-## Plot moves to the compartments 
-```{r}
 library(data.table)
 library(ggplot2)
-# Keep only genes that moved to a different chromosome
-#interchromosomal_moves <- moved_genes[
-#  chr_thal != lyrata_chr
-#]
-# Count gene movements for every chromosome pair
 setDT(moved_genes)
 movement_counts <- moved_genes[
   ,
@@ -244,8 +234,6 @@ gene_windows <- foverlaps(
 library(ggplot2)
 # Count genes/windows in each thaliana × lyrata compartment combination
 counts_moved <- gene_windows[, .N, by = .(compartment_thal, compartment_lyrata)]
-gene_windows2 <- gene_windows[gene_windows$gene_id %in% genes_with_ancestral_loc$gene_id, ]
-gene_windows <- gene_windows2
 # Square heatmap
 ggplot(
   counts_moved,
@@ -269,9 +257,7 @@ ggplot(
 ```{r}
 library(data.table)
 
-# Assuming moved_genes contains the same compartment columns
 dat <- copy(gene_windows)
-
 # Ensure consistent ordering
 dat[, compartment_thal := factor(compartment_thal, levels = c("low", "high"))]
 dat[, compartment_lyrata := factor(compartment_lyrata, levels = c("low", "high"))]
@@ -282,27 +268,10 @@ tab <- table(
   Destination = dat$compartment_lyrata
 )
 
-tab
-# Test of independance
-chisq_out <- chisq.test(tab)
-chisq_out
-chisq_out$expected
-```
-
-```{r}
-library(data.table)
-library(ggplot2)
-
-# Your existing 2x2 contingency table:
-# tab <- table(
-#   Source = moved_genes$compartment_thal,
-#   Destination = moved_genes$compartment_lyrata
-# )
-
 # Chi-square test
 chi_out <- chisq.test(tab)
 
-# Convert observed and expected values to a plotting data frame
+# Observed and expected into the dataframe
 plot_dat <- as.data.table(as.table(tab))
 setnames(plot_dat, "N", "observed")
 
@@ -323,13 +292,12 @@ plot_dat[, movement_class := fifelse(
   "Different compartment"
 )]
 
-# Keep a biologically intuitive order
 plot_dat[, transition := factor(
   transition,
   levels = c("low → low", "low → high", "high → low", "high → high")
 )]
 
-# Long format: one bar for observed and one for expected
+# To long format
 plot_long <- melt(
   plot_dat,
   id.vars = c("Source", "Destination", "transition", "movement_class"),
