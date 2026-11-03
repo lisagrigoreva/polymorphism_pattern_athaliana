@@ -29,7 +29,7 @@ neighbourhood matching their ancestral one.
 Steps are numbered in execution order; each directory has its own README.md with
 inputs, outputs and usage.
 
-1. **Whole-genome alignment** using pannagram — [`/scripts/01_wg_alignment/`](scripts/01_wg_alignment)
+1.[Whole-genome alignment](/scripts/01_wg_alignment/) using pannagram
 2. **Convert pannagram alignment to VCF** (variable + non-variable sites) — [`/scripts/02_alignment_to_vcf/`](scripts/02_alignment_to_vcf)
 3. **Identify 4-fold degenerate sites** — [`/scripts/03_get_degenerate_sites/`](scripts/03_get_degenerate_sites)
 4. **Identify 1:1 orthologs** between *A. thaliana* and *A. lyrata* — [`/scripts/04_get_orthologous_thal_lyr/`](scripts/04_get_orthologous_thal_lyr)
