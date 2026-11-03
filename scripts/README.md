@@ -2,8 +2,8 @@
 
 This repository contains the code for the analyses in **Grigoreva et al. (year), *Journal*. DOI: xxx**
 
-We use publicly available genome assemblies — 27 *Arabidopsis thaliana* and
-31 *Arabidopsis lyrata* — to characterise genome-wide patterns of nucleotide
+We use publicly available long read genome assemblies: 27 *Arabidopsis thaliana* and
+31 *Arabidopsis lyrata* to characterise genome-wide patterns of nucleotide
 diversity and divergence, to test the influence of mutation rate and background
 selection, and to ask whether single moved genes preferentially map to a
 neighbourhood matching their ancestral one.
