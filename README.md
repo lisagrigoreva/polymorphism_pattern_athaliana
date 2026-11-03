@@ -41,6 +41,10 @@ inputs, outputs and usage.
 10. **Expression and enrichment analysis** — [`/scripts/10_expression_and_enrichment/`](scripts/10_expression_and_enrichment)
 11. **Analysis of single moved genes** — [`/scripts/11_single_moved_genes/`](scripts/11_single_moved_genes)
 
+## Figures 
+
+## Authors and contributions 
+
 ## Dependencies
 
 Software and exact versions used are listed in [`/versions/versions.md`](versions/versions.md).
