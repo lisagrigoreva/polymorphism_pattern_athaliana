@@ -30,16 +30,16 @@ Steps are numbered in execution order; each directory has its own README.md with
 inputs, outputs and usage.
 
 1. [Whole-genome alignment](/scripts/01_wg_alignment/) using pannagram
-2. **Convert pannagram alignment to VCF** (variable + non-variable sites) — [`/scripts/02_alignment_to_vcf/`](scripts/02_alignment_to_vcf)
-3. **Identify 4-fold degenerate sites** — [`/scripts/03_get_degenerate_sites/`](scripts/03_get_degenerate_sites)
-4. **Identify 1:1 orthologs** between *A. thaliana* and *A. lyrata* — [`/scripts/04_get_orthologous_thal_lyr/`](scripts/04_get_orthologous_thal_lyr)
-5. **Nucleotide diversity (π) and divergence (d<sub>XY</sub>)** — [`/scripts/05_diversity_divergence/`](scripts/05_diversity_divergence)
-6. **Mutation rate estimation** — [`/scripts/06_mutation_rate/`](scripts/06_mutation_rate)
-7. **Recombination rate analysis (cM/Mb)** — [`/scripts/07_recombination_rate/`](scripts/07_recombination_rate)
-8. **dN/dS estimates** — [`/scripts/08_dnds/`](scripts/08_dnds)
-9. **Background selection** — [`/scripts/09_background_selection/`](scripts/09_background_selection)
-10. **Expression and enrichment analysis** — [`/scripts/10_expression_and_enrichment/`](scripts/10_expression_and_enrichment)
-11. **Analysis of single moved genes** — [`/scripts/11_single_moved_genes/`](scripts/11_single_moved_genes)
+2. [Convert pannagram alignment to VCF](scripts/02_alignment_to_vcf) to get variable and non-variable sites
+3. [Identify 4-fold degenerate sites](scripts/03_get_degenerate_sites)
+4. [Identify 1:1 orthologs](scripts/04_get_orthologous_thal_lyr) between *A. thaliana* and *A. lyrata*
+5. [Nucleotide diversity (π) and divergence (d<sub>XY</sub>)](scripts/05_diversity_divergence)
+6. [Mutation rate estimation](scripts/06_mutation_rate)
+7. [Recombination rate analysis (cM/Mb)](scripts/07_recombination_rate)
+8. [dN/dS estimates](scripts/08_dnds) for *A. thaliana*
+9. [Background selection](scripts/09_background_selection)
+10. [Expression and enrichment analysis](scripts/10_expression_and_enrichment)
+11. [Analysis of single moved genes](scripts/11_single_moved_genes)
 
 ## Figures 
 
